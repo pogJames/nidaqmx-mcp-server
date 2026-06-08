@@ -39,7 +39,6 @@ mcp = FastMCP("NI-DAQmx-Full")
 channel = grpc.insecure_channel("localhost:31763")
 
 
-
 def grpc_opts(name: str):
     return GrpcSessionOptions(grpc_channel=channel, session_name=name)
 
@@ -265,38 +264,6 @@ def read_voltage(
     tid = _new_id("ai_v")
     with nidaqmx.Task(new_task_name=tid, grpc_options=grpc_opts(tid)) as task:
         task.ai_channels.add_ai_voltage_chan(
-            physical_channel,
-            terminal_config=TERM.get(terminal_config, TerminalConfiguration.DIFF),
-            min_val=min_val, max_val=max_val,
-        )
-        task.timing.cfg_samp_clk_timing(
-            rate=sample_rate,
-            sample_mode=ACQ.get(acquisition_type.lower(), AcquisitionType.CONTINUOUS),
-            samps_per_chan=num_samples,
-        )
-        return task.read(number_of_samples_per_channel=num_samples)
-
-
-@mcp.tool()
-def read_current(
-    physical_channel: str = "Dev1/ai0",
-    num_samples: int = 10,
-    sample_rate: int = 1000,
-    min_val: float = -0.02,
-    max_val: float = 0.02,
-    shunt_resistor_loc: str = "internal",
-    ext_shunt_resistor_val: float = 249.0,
-) -> list[float]:
-    """Read analog current (amps) from a single AI channel."""
-    with nidaqmx.Task(new_task_name="mcp_read_i", grpc_options=grpc_opts("mcp_read_i")) as task:
-        task.ai_channels.add_ai_current_chan(
-            physical_channel,
-            min_val=min_val, max_val=max_val,
-            shunt_resistor_loc=SHUNT.get(shunt_resistor_loc, CurrentShuntResistorLocation.INTERNAL),
-            ext_shunt_resistor_val=ext_shunt_resistor_val,
-        )
-        task.timing.cfg_samp_clk_timing(
-            rate=sample_rate, sample_mode=AcquisitionType.FINITE, samps_per_chan=num_samples,
             channels,
             terminal_config=TERM.get(terminal_config, TerminalConfiguration.DIFF),
             min_val=min_val, max_val=max_val,
@@ -384,88 +351,6 @@ def read_current(
             sample_rate, sample_mode=AcquisitionType.FINITE, samps_per_chan=num_samples,
         )
         return task.read(number_of_samples_per_channel=num_samples)
-
-
-@mcp.tool()
-def read_thermocouple(
-    physical_channel: str = "Dev1/ai0",
-    tc_type: str = "K",
-    cjc_source: str = "built_in",
-    cjc_value: float = 25.0,
-    num_samples: int = 1,
-    min_val: float = 0.0,
-    max_val: float = 100.0,
-) -> list[float]:
-    """Read temperature (deg C) via thermocouple on a single AI channel."""
-    with nidaqmx.Task(new_task_name="mcp_tc", grpc_options=grpc_opts("mcp_tc")) as task:
-        task.ai_channels.add_ai_thrmcpl_chan(
-            physical_channel,
-            min_val=min_val, max_val=max_val,
-            units=TemperatureUnits.DEG_C,
-            thermocouple_type=TC.get(tc_type.upper(), ThermocoupleType.K),
-            cjc_source=CJC.get(cjc_source, CJCSource.BUILT_IN),
-            cjc_val=cjc_value,
-        )
-        result = task.read(number_of_samples_per_channel=num_samples)
-        return result if isinstance(result, list) else [result]
-
-
-@mcp.tool()
-def read_rtd(
-    physical_channel: str = "Dev1/ai0",
-    rtd_type: str = "Pt3851",
-    r0: float = 100.0,
-    wiring: str = "4-wire",
-    current_excit: float = 0.0025,
-    num_samples: int = 1,
-    min_val: float = 0.0,
-    max_val: float = 100.0,
-) -> list[float]:
-    """Read temperature (deg C) via RTD on a single AI channel."""
-    with nidaqmx.Task(new_task_name="mcp_rtd", grpc_options=grpc_opts("mcp_rtd")) as task:
-        task.ai_channels.add_ai_rtd_chan(
-            physical_channel,
-            min_val=min_val, max_val=max_val,
-            units=TemperatureUnits.DEG_C,
-            rtd_type=RTD.get(rtd_type, RTDType.PT_3851),
-            resistance_config=WIRING.get(wiring, ResistanceConfiguration.FOUR_WIRE),
-            current_excit_source=ExcitationSource.EXTERNAL,
-            current_excit_val=current_excit,
-            r_0=r0,
-        )
-        result = task.read(number_of_samples_per_channel=num_samples)
-        return result if isinstance(result, list) else [result]
-
-
-@mcp.tool()
-def read_strain(
-    physical_channel: str = "Dev1/ai0",
-    bridge_config: str = "full",
-    gage_factor: float = 2.0,
-    initial_bridge_voltage: float = 0.0,
-    nominal_gage_resistance: float = 350.0,
-    voltage_excit: float = 2.5,
-    num_samples: int = 1,
-    min_val: float = -0.001,
-    max_val: float = 0.001,
-) -> list[float]:
-    """Read strain (strain units) from a bridge-based AI channel."""
-    with nidaqmx.Task(new_task_name="mcp_strain", grpc_options=grpc_opts("mcp_strain")) as task:
-        task.ai_channels.add_ai_strain_gage_chan(
-            physical_channel,
-            min_val=min_val, max_val=max_val,
-            strain_config=BRIDGE.get(bridge_config, StrainGageBridgeType.FULL_BRIDGE_I),
-            voltage_excit_source=ExcitationSource.INTERNAL,
-            voltage_excit_val=voltage_excit,
-            gage_factor=gage_factor,
-            initial_bridge_voltage=initial_bridge_voltage,
-            nominal_gage_resistance=nominal_gage_resistance,
-        )
-        result = task.read(number_of_samples_per_channel=num_samples)
-        return result if isinstance(result, list) else [result]
-
-
-# ---------- Analog output ----------
 
 
 @mcp.tool()
@@ -698,10 +583,6 @@ def read_buffered_waveform(task_id: str, n: int = 100) -> dict:
 # ---------- Analog output ----------
 
 @mcp.tool()
-def write_voltage(physical_channel: str = "Dev1/ao0", voltage: float = 0.0) -> str:
-    """Write a single DC voltage to an AO channel."""
-    with nidaqmx.Task(new_task_name="mcp_write_v", grpc_options=grpc_opts("mcp_write_v")) as task:
-        task.ao_channels.add_ao_voltage_chan(physical_channel)
 def write_voltage(channel: str = "Dev1/ao0", voltage: float = 0.0) -> str:
     """Write a single DC voltage to an AO channel."""
     tid = _new_id("ao_v")
@@ -1218,47 +1099,47 @@ def wait_until_done(task_id: str, timeout: float = 10.0) -> str:
 
 # ---------- TDMS logging ----------
 
-@mcp.tool()
-def start_logging(
-    task_id: str,
-    tdms_path: str,
-    log_mode: str = "log",
-    log_operation: str = "create_or_replace",
-    group_name: str | None = None,
-) -> str:
-    """Attach TDMS logging to an existing continuous AI task and start recording to disk.
+# @mcp.tool()
+# def start_logging(
+#     task_id: str,
+#     tdms_path: str,
+#     log_mode: str = "log",
+#     log_operation: str = "create_or_replace",
+#     group_name: str | None = None,
+# ) -> str:
+#     """Attach TDMS logging to an existing continuous AI task and start recording to disk.
 
-    Stops the task, fully unreserves it (required by DAQmx to change logging config), attaches
-    logging, then restarts. Samples buffered at call time are discarded. Use `stop_logging` to
-    end the recording; the task itself keeps running.
+#     Stops the task, fully unreserves it (required by DAQmx to change logging config), attaches
+#     logging, then restarts. Samples buffered at call time are discarded. Use `stop_logging` to
+#     end the recording; the task itself keeps running.
 
-    `log_mode`:
-      - 'log' (default): samples stream straight to disk; read_buffered is disabled.
-        Safe for long unattended runs — no buffer to drain, no overflow risk.
-      - 'log_and_read': samples are buffered for reading AND written to disk. The caller MUST
-        call read_buffered periodically or the buffer overflows.
-    """
-    task = _get(task_id)
-    task.stop()
-    task.control(TaskMode.TASK_UNRESERVE)
-    kwargs = {"operation": LOG_OP.get(log_operation, LoggingOperation.CREATE_OR_REPLACE)}
-    if group_name:
-        kwargs["group_name"] = group_name
-    task.in_stream.configure_logging(
-        tdms_path,
-        LOG_MODE.get(log_mode, LoggingMode.LOG),
-        **kwargs,
-    )
-    task.start()
-    return f"logging {task_id} -> {tdms_path} ({log_mode})"
+#     `log_mode`:
+#       - 'log' (default): samples stream straight to disk; read_buffered is disabled.
+#         Safe for long unattended runs — no buffer to drain, no overflow risk.
+#       - 'log_and_read': samples are buffered for reading AND written to disk. The caller MUST
+#         call read_buffered periodically or the buffer overflows.
+#     """
+#     task = _get(task_id)
+#     task.stop()
+#     task.control(TaskMode.TASK_UNRESERVE)
+#     kwargs = {"operation": LOG_OP.get(log_operation, LoggingOperation.CREATE_OR_REPLACE)}
+#     if group_name:
+#         kwargs["group_name"] = group_name
+#     task.in_stream.configure_logging(
+#         tdms_path,
+#         LOG_MODE.get(log_mode, LoggingMode.LOG),
+#         **kwargs,
+#     )
+#     task.start()
+#     return f"logging {task_id} -> {tdms_path} ({log_mode})"
 
 
-@mcp.tool()
-def stop_logging(task_id: str) -> str:
-    """Stop TDMS logging on a task without stopping the task itself."""
-    task = _get(task_id)
-    task.in_stream.logging_mode = LoggingMode.OFF
-    return f"stopped logging on {task_id}"
+# @mcp.tool()
+# def stop_logging(task_id: str) -> str:
+#     """Stop TDMS logging on a task without stopping the task itself."""
+#     task = _get(task_id)
+#     task.in_stream.logging_mode = LoggingMode.OFF
+#     return f"stopped logging on {task_id}"
 
 
 @mcp.tool()
