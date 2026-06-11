@@ -1,4 +1,14 @@
-/build
-/__pycache__
-LICENSE
-ThirdPartyNotices.txt
+# Ignore everything at the root by default
+/*
+
+# Track only these directories and this file
+!/server/
+!/research/
+!/.gitignore
+
+# Common junk inside tracked directories
+**/__pycache__/
+**/*.pyc
+**/build/
+**/*.egg-info/
+**/data/

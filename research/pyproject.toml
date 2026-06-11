@@ -1,0 +1,21 @@
+[project]
+name = "tdms-research"
+version = "0.1.0"
+description = "MCP server for browsing, analyzing, and reporting on TDMS files via a local web UI."
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "npTDMS>=1.7",
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "plotly>=5.20",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]

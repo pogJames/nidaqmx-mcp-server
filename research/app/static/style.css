@@ -1,0 +1,38 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: -apple-system, "Segoe UI", system-ui, sans-serif; color: #222; background: #f5f6f8; }
+body { display: flex; }
+
+#sidebar {
+  width: 300px; min-width: 300px; background: #fff;
+  border-right: 1px solid #e5e6ea; padding: 18px 16px;
+  display: flex; flex-direction: column; gap: 18px; overflow-y: auto;
+}
+#sidebar header h1 { 
+  font-size: 28px;
+  text-transform: uppercase; 
+}
+#sidebar section h2 {
+  font-size: 16px; 
+  text-transform: uppercase; 
+  color: #777; 
+  margin-bottom: 4px;
+}
+#sidebar ul { list-style: none; font-size: 12px; }
+#sidebar li { padding: 7px 0; border-bottom: 1px solid #f1f2f4; }
+#sidebar li:last-child { border-bottom: 0; }
+#sidebar li.muted { color: #aaa; font-style: italic; }
+.id { display: inline-block; font-family: ui-monospace, monospace; color: #06c; margin-right: 6px; }
+.path { color: #555; word-break: break-all; }
+.pass { color: #0a7; font-weight: 600; }
+.fail { color: #c33; font-weight: 600; }
+.muted { color: #aaa; }
+#status {
+  margin-top: auto; padding-top: 10px; font-size: 12px; color: #777;
+  border-top: 1px solid #f1f2f4;
+}
+
+main { flex: 1; padding: 16px; display: flex; flex-direction: column; }
+#chart {
+  flex: 1; background: #fff; border: 1px solid #e5e6ea;
+  border-radius: 8px; min-height: 0;
+}
