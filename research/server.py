@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, Field
 
 from app import analysis
 from app.state import state
@@ -82,11 +83,34 @@ def list_channels(file_id: str, group: str) -> list[str]:
     return [c.name for c in f.tdms[group].channels()]
 
 
+class Channel(BaseModel):
+    file_id: str
+    group: str
+    channel: str
+
+
+class Trace(Channel):
+    t_offset: float | None = Field(
+        default=None,
+        description="Shift this trace's time axis by this many seconds.",
+    )
+    t_start: float | None = None
+    t_end: float | None = None
+
+
+def _channel_xy(c: Channel) -> tuple:
+    """Load (x, y, dt) for a channel."""
+    f = state.get_file(c.file_id)
+    x, y = analysis.channel_data(f, c.group, c.channel)
+    dt = float(x[1] - x[0]) if len(x) > 1 else 1.0
+    return x, y, dt
+
+
 @mcp.tool()
-def get_channel_info(file_id: str, group: str, channel: str) -> dict:
+def get_channel_info(channel: Channel) -> dict:
     """Return length and TDMS properties for a channel."""
-    f = state.get_file(file_id)
-    ch = f.tdms[group][channel]
+    f = state.get_file(channel.file_id)
+    ch = f.tdms[channel.group][channel.channel]
     return {
         "length": int(len(ch)),
         "properties": {k: str(v) for k, v in ch.properties.items()},
@@ -94,132 +118,97 @@ def get_channel_info(file_id: str, group: str, channel: str) -> dict:
 
 
 @mcp.tool()
-def get_stats(file_id: str, group: str, channel: str) -> dict:
+def get_stats(channel: Channel) -> dict:
     """Return min/max/mean/std/rms/peak for a channel."""
-    f = state.get_file(file_id)
-    _, y = analysis.channel_data(f, group, channel)
+    _, y, _ = _channel_xy(channel)
     return analysis.stats(y)
 
 
-@mcp.tool()
-def plot_channel(
-    file_id: str,
-    group: str,
-    channel: str,
-    decimate: int = 1,
-    t_start: float | None = None,
-    t_end: float | None = None,
-) -> str:
-    """Plot a channel on the dashboard. Optional decimation and time-window slicing."""
-    f = state.get_file(file_id)
-    x, y = analysis.channel_data(f, group, channel)
-    if t_start is not None or t_end is not None:
-        lo = t_start if t_start is not None else x[0]
-        hi = t_end if t_end is not None else x[-1]
+def _build_trace(t: Trace, decimate: int = 1) -> dict:
+    x, y, _ = _channel_xy(t)
+    if t.t_offset:
+        x = x + t.t_offset
+    if t.t_start is not None or t.t_end is not None:
+        lo = t.t_start if t.t_start is not None else x[0]
+        hi = t.t_end if t.t_end is not None else x[-1]
         mask = (x >= lo) & (x <= hi)
         x, y = x[mask], y[mask]
     if decimate > 1:
         x, y = x[::decimate], y[::decimate]
-    fig = analysis.make_line_fig(
-        [{"x": x.tolist(), "y": y.tolist(), "name": channel}],
-        title=channel, ylabel=channel,
-    )
-    state.push_figure(_fig_to_dict(fig))
-    return f"plotted {len(y)} samples"
+    return {
+        "x": x.tolist(), "y": y.tolist(),
+        "name": f"{t.file_id} - {t.group}/{t.channel}",
+    }
 
 
 @mcp.tool()
-def overlay(traces: list[dict], decimate: int = 1, align: bool = False) -> str:
+def plot_channel(trace: Trace, decimate: int = 1) -> str:
+    """Plot a channel on the dashboard. Optional decimation and time-window slicing."""
+    plot_trace = _build_trace(trace, decimate=decimate)
+    title = plot_trace["name"]
+    fig = analysis.make_line_fig([plot_trace], title=title)
+    state.push_figure(_fig_to_dict(fig))
+    return f"plotted {len(plot_trace['y'])} samples for {title}"
+
+
+def _align_offsets(traces: list[Trace]) -> list[float]:
+    """Per-trace `t_offset` values that align each trace's first peak to the first trace."""
+    peak_times = []
+    for t in traces:
+        x, y, _ = _channel_xy(t)
+        peak_times.append(analysis.find_first_peak(x, y)["time"])
+    anchor = peak_times[0]
+    return [anchor - pt for pt in peak_times]
+
+
+@mcp.tool()
+def overlay_channels(traces: list[Trace], decimate: int = 1, align: bool = False) -> str:
     """Overlay multiple channels on the same axes.
 
-    Each trace: {file_id, group, channel, t_offset?}.
-    `t_offset` (seconds) shifts that trace's time axis — e.g. `t_offset=-0.15`
-    plots the trace 0.15 s earlier so it lines up with another trace.
+    If `align=True`, each trace is time-shifted so its first peak lines up with
+    the first trace's first peak.
     """
     if align:
-        peaks = first_peak(traces)
-        anchor = peaks[0]["time"]
-        traces[0]["t_offset"] = 0.0
-        for t, p in zip(traces[1:], peaks[1:]):
-            t["t_offset"] = anchor - p["time"]
-
-    plot_traces = []
-    total_samples = 0
-    for t in traces:
-        f = state.get_file(t["file_id"])
-        x, y = analysis.channel_data(f, t["group"], t["channel"])
-        t_offset = t.get("t_offset")
-        if t_offset:
-            x = x + float(t_offset)
-        if decimate > 1:
-            x, y = x[::decimate], y[::decimate]
-        plot_traces.append({
-            "x": x.tolist(), "y": y.tolist(),
-            "name": f"{t['group']}/{t['channel']}",
-        })
-        total_samples += len(y)
-    title = " + ".join(t["file_id"] for t in traces)
+        offsets = _align_offsets(traces)
+        traces = [t.model_copy(update={"t_offset": o}) for t, o in zip(traces, offsets)]
+    plot_traces = [_build_trace(t, decimate=decimate) for t in traces]
+    title = " + ".join(t["name"] for t in plot_traces)
     fig = analysis.make_line_fig(plot_traces, title=title)
     state.push_figure(_fig_to_dict(fig))
-    return f"overlaid {len(plot_traces)} traces ({total_samples} samples total)"
+    return f"overlaid {len(plot_traces)} traces for {title}"
 
 
-def first_peak(traces: list[dict], threshold_frac: float = 0.999) -> list[dict]:
-    """Find peak times for aligning waves — feed into `overlay`'s `t_offset`.
-
-    Traces: [{file_id, group, channel}, ...]. Returns one result per trace
-    with `time` (peak timestamp), `value`, `index`, `peak_value`,
-    `threshold`, and `error?` on failure.
-    """
-    results = []
-    for t in traces:
-        result = {
-            "file_id": t.get("file_id"),
-            "group": t.get("group"),
-            "channel": t.get("channel"),
-        }
-        try:
-            f = state.get_file(t["file_id"])
-            x, y = analysis.channel_data(f, t["group"], t["channel"])
-            result.update(analysis.find_first_peak(x, y, threshold_frac))
-        except Exception as e:
-            result["error"] = str(e)
-        results.append(result)
-    return results
+def _plot_spectrum(
+    channel: Channel, freqs, values,
+    *, kind: str, ylabel: str, peak_key: str, log_y: bool = False,
+) -> dict:
+    """Plot a frequency-domain spectrum and return the peak."""
+    fig = analysis.make_line_fig(
+        [{"x": freqs.tolist(), "y": values.tolist(), "name": channel.channel}],
+        title=f"{kind} — {channel.channel}", xlabel="frequency (Hz)", ylabel=ylabel,
+    )
+    fig.update_xaxes(type="log")
+    if log_y:
+        fig.update_yaxes(type="log")
+    state.push_figure(_fig_to_dict(fig))
+    i = int(values.argmax())
+    return {"peak_freq_hz": float(freqs[i]), peak_key: float(values[i])}
 
 
 @mcp.tool()
-def plot_fft(file_id: str, group: str, channel: str) -> dict:
+def plot_fft(channel: Channel) -> dict:
     """FFT magnitude (Hann window) of a channel. Returns peak frequency."""
-    f = state.get_file(file_id)
-    x, y = analysis.channel_data(f, group, channel)
-    dt = float(x[1] - x[0]) if len(x) > 1 else 1.0
+    _, y, dt = _channel_xy(channel)
     freqs, mag = analysis.fft_data(y, dt)
-    fig = analysis.make_line_fig(
-        [{"x": freqs.tolist(), "y": mag.tolist(), "name": channel}],
-        title=f"FFT — {channel}", xlabel="frequency (Hz)", ylabel="magnitude",
-    )
-    fig.update_xaxes(type="log")
-    state.push_figure(_fig_to_dict(fig))
-    i = int(mag.argmax())
-    return {"peak_freq_hz": float(freqs[i]), "peak_mag": float(mag[i])}
+    return _plot_spectrum(channel, freqs, mag, kind="FFT", ylabel="magnitude", peak_key="peak_mag")
 
 
 @mcp.tool()
-def plot_psd(file_id: str, group: str, channel: str, nperseg: int | None = None) -> str:
-    """Welch power spectral density of a channel."""
-    f = state.get_file(file_id)
-    x, y = analysis.channel_data(f, group, channel)
-    dt = float(x[1] - x[0]) if len(x) > 1 else 1.0
+def plot_psd(channel: Channel, nperseg: int | None = None) -> dict:
+    """Welch power spectral density of a channel. Returns peak frequency."""
+    _, y, dt = _channel_xy(channel)
     freqs, pxx = analysis.welch_psd(y, dt, nperseg=nperseg)
-    fig = analysis.make_line_fig(
-        [{"x": freqs.tolist(), "y": pxx.tolist(), "name": channel}],
-        title=f"PSD — {channel}", xlabel="frequency (Hz)", ylabel="power/Hz",
-    )
-    fig.update_xaxes(type="log")
-    fig.update_yaxes(type="log")
-    state.push_figure(_fig_to_dict(fig))
-    return "ok"
+    return _plot_spectrum(channel, freqs, pxx, kind="PSD", ylabel="power/Hz", peak_key="peak_power", log_y=True)
 
 
 @mcp.tool()

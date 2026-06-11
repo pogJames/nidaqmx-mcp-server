@@ -41,7 +41,7 @@ def fft_data(y: np.ndarray, dt: float) -> tuple[np.ndarray, np.ndarray]:
     return freqs, mag
 
 
-def find_first_peak(x: np.ndarray, y: np.ndarray, threshold_frac: float = 0.99) -> dict:
+def find_first_peak(x: np.ndarray, y: np.ndarray, threshold_frac: float = 0.999) -> dict:
     if len(y) == 0:
         raise ValueError("empty channel")
     peak_val = float(np.max(y))
