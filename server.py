@@ -158,6 +158,23 @@ def _apply_trigger(task, start_trigger_src, edge, retriggerable):
             task.triggers.start_trigger.retriggerable = True
 
 
+def _apply_logging(
+    task,
+    tdms_path: str | None,
+    log_operation: str = "create_or_replace",
+    group_name: str | None = None,
+    mode: LoggingMode = LoggingMode.LOG_AND_READ,
+) -> None:
+    if not tdms_path:
+        return
+    kwargs: dict[str, Any] = {
+        "operation": LOG_OP.get(log_operation, LoggingOperation.CREATE_OR_REPLACE),
+    }
+    if group_name:
+        kwargs["group_name"] = group_name
+    task.in_stream.configure_logging(tdms_path, mode, **kwargs)
+
+
 
 
 # ---------- System / device ----------
@@ -259,8 +276,17 @@ def read_voltage(
     terminal_config: str = "diff",
     min_val: float = -10.0,
     max_val: float = 10.0,
+    log_to: str | None = None,
+    log_operation: str = "create_or_replace",
+    group_name: str | None = None,
 ) -> list:
-    """Finite AI voltage read. `channels` may be a range (e.g. 'Dev1/ai0:3') for multi-channel."""
+    """Finite AI voltage read. `channels` may be a range (e.g. 'Dev1/ai0:3') for multi-channel.
+
+    Pass `log_to=<path.tdms>` to also stream samples to a TDMS file (LOG_AND_READ).
+    If log_to is not set, data is only returned in-memory and cannot be accessed 
+    by dashboard tools like load_tdms or overlay. Always set log_to when the intent 
+    is to log or visualize data.
+    """
     tid = _new_id("ai_v")
     with nidaqmx.Task(new_task_name=tid, grpc_options=grpc_opts(tid)) as task:
         task.ai_channels.add_ai_voltage_chan(
@@ -271,6 +297,7 @@ def read_voltage(
         task.timing.cfg_samp_clk_timing(
             sample_rate, sample_mode=AcquisitionType.FINITE, samps_per_chan=num_samples,
         )
+        _apply_logging(task, log_to, log_operation, group_name)
         return task.read(number_of_samples_per_channel=num_samples)
 
 
@@ -279,14 +306,24 @@ def read_voltage_waveform(
     channels: str = "Dev1/ai0",
     num_samples: int = 50,
     sample_rate: float = 1000.0,
+    log_to: str | None = None,
+    log_operation: str = "create_or_replace",
+    group_name: str | None = None,
 ) -> dict:
-    """Finite AI voltage read returned as a waveform with timing metadata."""
+    """Finite AI voltage read returned as a waveform with timing metadata.
+
+    Pass `log_to=<path.tdms>` to also stream samples to a TDMS file (LOG_AND_READ).
+    If log_to is not set, data is only returned in-memory and cannot be accessed 
+    by dashboard tools like load_tdms or overlay. Always set log_to when the intent 
+    is to log or visualize data.
+    """
     tid = _new_id("ai_wfm")
     with nidaqmx.Task(new_task_name=tid, grpc_options=grpc_opts(tid)) as task:
         task.ai_channels.add_ai_voltage_chan(channels)
         task.timing.cfg_samp_clk_timing(
             sample_rate, sample_mode=AcquisitionType.FINITE, samps_per_chan=num_samples,
         )
+        _apply_logging(task, log_to, log_operation, group_name)
         wf = task.read_waveform()
         return {
             "data": list(wf.scaled_data),
@@ -338,8 +375,17 @@ def read_current(
     max_val: float = 0.02,
     shunt_resistor_loc: str = "internal",
     ext_shunt_resistor_val: float = 249.0,
+    log_to: str | None = None,
+    log_operation: str = "create_or_replace",
+    group_name: str | None = None,
 ) -> list:
-    """Finite AI current read (amps)."""
+    """Finite AI current read (amps).
+
+    Pass `log_to=<path.tdms>` to also stream samples to a TDMS file (LOG_AND_READ).
+    If log_to is not set, data is only returned in-memory and cannot be accessed 
+    by dashboard tools like load_tdms or overlay. Always set log_to when the intent 
+    is to log or visualize data.
+    """
     tid = _new_id("ai_i")
     with nidaqmx.Task(new_task_name=tid, grpc_options=grpc_opts(tid)) as task:
         task.ai_channels.add_ai_current_chan(
@@ -350,6 +396,7 @@ def read_current(
         task.timing.cfg_samp_clk_timing(
             sample_rate, sample_mode=AcquisitionType.FINITE, samps_per_chan=num_samples,
         )
+        _apply_logging(task, log_to, log_operation, group_name)
         return task.read(number_of_samples_per_channel=num_samples)
 
 
@@ -362,8 +409,17 @@ def read_thermocouple(
     num_samples: int = 1,
     min_val: float = 0.0,
     max_val: float = 100.0,
+    log_to: str | None = None,
+    log_operation: str = "create_or_replace",
+    group_name: str | None = None,
 ) -> list:
-    """Single-point or finite thermocouple temperature read (deg C)."""
+    """Single-point or finite thermocouple temperature read (deg C).
+
+    Pass `log_to=<path.tdms>` to also stream samples to a TDMS file (LOG_AND_READ).
+    If log_to is not set, data is only returned in-memory and cannot be accessed 
+    by dashboard tools like load_tdms or overlay. Always set log_to when the intent 
+    is to log or visualize data.
+    """
     tid = _new_id("ai_tc")
     with nidaqmx.Task(new_task_name=tid, grpc_options=grpc_opts(tid)) as task:
         task.ai_channels.add_ai_thrmcpl_chan(
@@ -373,6 +429,7 @@ def read_thermocouple(
             cjc_source=CJC.get(cjc_source, CJCSource.BUILT_IN),
             cjc_val=cjc_value,
         )
+        _apply_logging(task, log_to, log_operation, group_name)
         result = task.read(number_of_samples_per_channel=num_samples)
         return result if isinstance(result, list) else [result]
 
@@ -387,8 +444,17 @@ def read_rtd(
     num_samples: int = 1,
     min_val: float = 0.0,
     max_val: float = 100.0,
+    log_to: str | None = None,
+    log_operation: str = "create_or_replace",
+    group_name: str | None = None,
 ) -> list:
-    """Single-point or finite RTD temperature read (deg C)."""
+    """Single-point or finite RTD temperature read (deg C).
+
+    Pass `log_to=<path.tdms>` to also stream samples to a TDMS file (LOG_AND_READ).
+    If log_to is not set, data is only returned in-memory and cannot be accessed 
+    by dashboard tools like load_tdms or overlay. Always set log_to when the intent 
+    is to log or visualize data.
+    """
     tid = _new_id("ai_rtd")
     with nidaqmx.Task(new_task_name=tid, grpc_options=grpc_opts(tid)) as task:
         task.ai_channels.add_ai_rtd_chan(
@@ -400,6 +466,7 @@ def read_rtd(
             current_excit_val=current_excit,
             r_0=r0,
         )
+        _apply_logging(task, log_to, log_operation, group_name)
         result = task.read(number_of_samples_per_channel=num_samples)
         return result if isinstance(result, list) else [result]
 
@@ -415,8 +482,17 @@ def read_strain(
     num_samples: int = 1,
     min_val: float = -0.001,
     max_val: float = 0.001,
+    log_to: str | None = None,
+    log_operation: str = "create_or_replace",
+    group_name: str | None = None,
 ) -> list:
-    """Single-point or finite strain-gage read (strain units)."""
+    """Single-point or finite strain-gage read (strain units).
+
+    Pass `log_to=<path.tdms>` to also stream samples to a TDMS file (LOG_AND_READ).
+    If log_to is not set, data is only returned in-memory and cannot be accessed 
+    by dashboard tools like load_tdms or overlay. Always set log_to when the intent 
+    is to log or visualize data.
+    """
     tid = _new_id("ai_strain")
     with nidaqmx.Task(new_task_name=tid, grpc_options=grpc_opts(tid)) as task:
         task.ai_channels.add_ai_strain_gage_chan(
@@ -428,6 +504,7 @@ def read_strain(
             initial_bridge_voltage=initial_bridge_voltage,
             nominal_gage_resistance=nominal_gage_resistance,
         )
+        _apply_logging(task, log_to, log_operation, group_name)
         result = task.read(number_of_samples_per_channel=num_samples)
         return result if isinstance(result, list) else [result]
 
@@ -1095,91 +1172,6 @@ def wait_until_done(task_id: str, timeout: float = 10.0) -> str:
     """Block until the task finishes or the timeout expires."""
     _get(task_id).wait_until_done(timeout=timeout)
     return f"{task_id} done"
-
-
-# ---------- TDMS logging ----------
-
-# @mcp.tool()
-# def start_logging(
-#     task_id: str,
-#     tdms_path: str,
-#     log_mode: str = "log",
-#     log_operation: str = "create_or_replace",
-#     group_name: str | None = None,
-# ) -> str:
-#     """Attach TDMS logging to an existing continuous AI task and start recording to disk.
-
-#     Stops the task, fully unreserves it (required by DAQmx to change logging config), attaches
-#     logging, then restarts. Samples buffered at call time are discarded. Use `stop_logging` to
-#     end the recording; the task itself keeps running.
-
-#     `log_mode`:
-#       - 'log' (default): samples stream straight to disk; read_buffered is disabled.
-#         Safe for long unattended runs — no buffer to drain, no overflow risk.
-#       - 'log_and_read': samples are buffered for reading AND written to disk. The caller MUST
-#         call read_buffered periodically or the buffer overflows.
-#     """
-#     task = _get(task_id)
-#     task.stop()
-#     task.control(TaskMode.TASK_UNRESERVE)
-#     kwargs = {"operation": LOG_OP.get(log_operation, LoggingOperation.CREATE_OR_REPLACE)}
-#     if group_name:
-#         kwargs["group_name"] = group_name
-#     task.in_stream.configure_logging(
-#         tdms_path,
-#         LOG_MODE.get(log_mode, LoggingMode.LOG),
-#         **kwargs,
-#     )
-#     task.start()
-#     return f"logging {task_id} -> {tdms_path} ({log_mode})"
-
-
-# @mcp.tool()
-# def stop_logging(task_id: str) -> str:
-#     """Stop TDMS logging on a task without stopping the task itself."""
-#     task = _get(task_id)
-#     task.in_stream.logging_mode = LoggingMode.OFF
-#     return f"stopped logging on {task_id}"
-
-
-@mcp.tool()
-def log_voltage_to_tdms(
-    channels: str = "Dev1/ai0",
-    duration: float = 1.0,
-    tdms_path: str = "C:/data/run.tdms",
-    sample_rate: float = 1000.0,
-    terminal_config: str = "diff",
-    min_val: float = -10.0,
-    max_val: float = 10.0,
-    log_operation: str = "create_or_replace",
-    group_name: str | None = None,
-) -> str:
-    """Finite AI voltage acquisition streamed directly to a TDMS file. Self-contained: creates the
-    task with logging configured up front, runs for `duration` seconds, then closes the task.
-
-    No task_id is returned because nothing is left running. Use this when you just want a file
-    capture and don't need live polling. For live polling + later attached logging, use
-    start_continuous_voltage + start_logging instead.
-    """
-    n_samples = max(1, int(round(duration * sample_rate)))
-    tid = _new_id("ai_log")
-    with nidaqmx.Task(new_task_name=tid, grpc_options=grpc_opts(tid)) as task:
-        task.ai_channels.add_ai_voltage_chan(
-            channels,
-            terminal_config=TERM.get(terminal_config, TerminalConfiguration.DIFF),
-            min_val=min_val, max_val=max_val,
-        )
-        task.timing.cfg_samp_clk_timing(
-            sample_rate, sample_mode=AcquisitionType.FINITE, samps_per_chan=n_samples,
-        )
-        kwargs = {"operation": LOG_OP.get(log_operation, LoggingOperation.CREATE_OR_REPLACE)}
-        if group_name:
-            kwargs["group_name"] = group_name
-        task.in_stream.configure_logging(tdms_path, LoggingMode.LOG, **kwargs)
-        task.start()
-        task.wait_until_done(timeout=duration + 5.0)
-        task.stop()
-    return f"logged {n_samples} samples ({duration}s @ {sample_rate}Hz) to {tdms_path}"
 
 
 # Alias used by measure_pulse_frequency; bound to a context-manager wrapper for one-shot tasks.
