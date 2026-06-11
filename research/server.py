@@ -1,6 +1,10 @@
 import json
+import sys
 import threading
 import webbrowser
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -8,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from app import analysis
 from app.state import state
 from app.web import app as web_app
+from shared.paths import DATA_DIR, resolve as _resolve_data_path
 
 HOST = "127.0.0.1"
 PORT = 7878
@@ -29,12 +34,24 @@ def open_view() -> str:
 
 @mcp.tool()
 def load_tdms(path: str) -> dict:
-    """Load a TDMS file. Returns its file_id plus the group→channel map."""
-    file_id = state.add_file(path)
+    """Load a TDMS file. `path` may be a bare filename (resolved under shared/data/)
+    or an absolute path. Returns the file_id plus the group→channel map."""
+    resolved = str(_resolve_data_path(path))
+    file_id = state.add_file(resolved)
     f = state.get_file(file_id)
     groups = {g.name: [c.name for c in g.channels()] for g in f.tdms.groups()}
     state.notify("refresh_files")
-    return {"file_id": file_id, "path": path, "groups": groups}
+    return {"file_id": file_id, "path": resolved, "groups": groups}
+
+
+@mcp.tool()
+def list_recordings() -> list[dict]:
+    """List TDMS files in the shared data folder with size and mtime."""
+    out = []
+    for p in sorted(DATA_DIR.glob("*.tdms")):
+        st = p.stat()
+        out.append({"name": p.name, "size_bytes": st.st_size, "mtime": st.st_mtime})
+    return out
 
 
 @mcp.tool()

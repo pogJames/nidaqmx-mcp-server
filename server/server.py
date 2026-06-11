@@ -1,7 +1,12 @@
 import atexit
+import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from shared.paths import resolve as _resolve_data_path  # noqa: E402
 
 import grpc
 import nidaqmx
@@ -167,12 +172,13 @@ def _apply_logging(
 ) -> None:
     if not tdms_path:
         return
+    resolved = str(_resolve_data_path(tdms_path))
     kwargs: dict[str, Any] = {
         "operation": LOG_OP.get(log_operation, LoggingOperation.CREATE_OR_REPLACE),
     }
     if group_name:
         kwargs["group_name"] = group_name
-    task.in_stream.configure_logging(tdms_path, mode, **kwargs)
+    task.in_stream.configure_logging(resolved, mode, **kwargs)
 
 
 

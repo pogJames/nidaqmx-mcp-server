@@ -4,11 +4,15 @@
 # Track only these directories and this file
 !/server/
 !/research/
+!/shared/
 !/.gitignore
+
+# Track shared/data/ folder but not its TDMS contents
+/shared/data/*
+!/shared/data/.gitkeep
 
 # Common junk inside tracked directories
 **/__pycache__/
 **/*.pyc
 **/build/
 **/*.egg-info/
-**/data/
