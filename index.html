@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>NI-DAQmx Live Monitor</title>
+    <style>
+/*{{THEME}}*/
+
+/* Page-specific, on top of the shared report theme. The charts are canvas rather
+   than SVG, so they cannot use var() directly — the drawing code reads these tokens
+   through getComputedStyle and redraws when the colour scheme changes. */
+
+:root { --sig: #1a8f4c; --spec: #b0651a; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --sig: #43d17a; --spec: #e0a34a; }
+}
+:root[data-theme="dark"] { --sig: #43d17a; --spec: #e0a34a; }
+
+.wrap { max-width: 1320px; }          /* two charts side by side need the room */
+
+.panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px; }
+@media (max-width: 980px) { .panels { grid-template-columns: 1fr; } }
+
+.panel-head { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin: 0 0 12px; min-height: 24px; }
+.panel-head h2 { margin: 0; }
+
+canvas { display: block; width: 100%; height: 320px; }
+
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+.vh { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+.toggle-text {
+  position: relative; cursor: pointer; user-select: none;
+  font-size: 12.5px; color: var(--ink-2);
+}
+.toggle-text::after {
+  content: ''; position: absolute; left: 0; bottom: 0; width: 100%; height: 1px;
+  background: currentColor;
+  transform: scaleX(0); transform-origin: left;
+  transition: transform .18s ease;
+}
+.toggle-text:hover::after { transform: scaleX(1); }
+.vh:checked + .toggle-text { color: var(--sig); }
+.vh:focus-visible + .toggle-text { outline: 1px dotted var(--accent); outline-offset: 3px; }
+
+.numfield { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px;
+  color: var(--ink-2); user-select: none; }
+.numfield input {
+  box-sizing: border-box; width: 68px; padding: 3px 7px; font: inherit;
+  color: var(--ink); background: var(--surface);
+  border: 1px solid var(--rule); border-radius: 6px;
+}
+.numfield input:focus { outline: none; border-color: var(--accent); }
+
+.head-controls { display: inline-flex; align-items: center; gap: 14px; }
+
+#record {
+  font: inherit; font-size: 12.5px; font-weight: 560; cursor: pointer;
+  color: var(--ink-2); background: var(--surface);
+  border: 1px solid var(--rule); border-radius: 999px; padding: 4px 13px 4px 10px;
+  display: inline-flex; align-items: center; gap: 7px;
+}
+#record::before {
+  content: ''; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--muted);
+}
+#record:hover:not(:disabled) { border-color: var(--critical); color: var(--critical); }
+#record:hover:not(:disabled)::before { background: var(--critical); }
+#record:disabled { opacity: .45; cursor: default; }
+#record.on { color: var(--critical); border-color: var(--critical); }
+#record.on::before { background: var(--critical); animation: pulse 1.4s infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+
+/* margin-left:auto pushes it to the far edge of the flex legend row, so the recording
+   status sits opposite the signal label rather than trailing it. */
+#recinfo { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+h1 { font-variant-numeric: tabular-nums; }
+h1.live { color: var(--sig); }
+
+/* The report .meta is an auto-fit grid, which wraps to two rows inside a half-width
+   panel. Four stats belong on one line here. */
+.meta { display: flex; flex-wrap: wrap; gap: 4px 22px; margin-top: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1 id="status">connecting…</h1>
+
+      <div class="panels">
+        <section class="card">
+          <div class="panel-head">
+            <h2>Raw</h2>
+            <div class="head-controls">
+              <button id="record" type="button" disabled>Record</button>
+              <input type="checkbox" id="autoscale" class="vh" checked>
+              <label class="toggle-text" for="autoscale">auto-scale</label>
+            </div>
+          </div>
+          <div class="legend">
+            <span><i class="swatch" style="background:var(--sig)"></i>
+              <span id="siglabel">signal</span></span>
+            <span id="recinfo"></span>
+          </div>
+          <div class="chart"><canvas id="wave"></canvas></div>
+          <div class="meta" id="wstats"></div>
+        </section>
+
+        <section class="card">
+          <div class="panel-head">
+            <h2>FFT</h2>
+            <label class="numfield">
+              bins
+              <input type="number" id="fftbins" min="2" step="1" placeholder="all">
+            </label>
+          </div>
+          <div class="legend">
+            <span><i class="swatch" style="background:var(--spec)"></i>
+              amplitude</span>
+          </div>
+          <div class="chart"><canvas id="spec"></canvas></div>
+          <div class="meta" id="sstats"></div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      const waveCvs = document.getElementById('wave'),
+            specCvs = document.getElementById('spec');
+      const statusEl = document.getElementById('status'),
+            siglabelEl = document.getElementById('siglabel'),
+            wstatsEl = document.getElementById('wstats'),
+            sstatsEl = document.getElementById('sstats');
+      const autoscaleEl = document.getElementById('autoscale');
+      const fftBinsEl = document.getElementById('fftbins');
+      const recordEl = document.getElementById('record'),
+            recInfoEl = document.getElementById('recinfo');
+      let lastMsg = null;
+      let recording = null;      // mirrors the server; the stream is the source of truth
+
+      // Canvas cannot resolve var(), so the palette is read from the same custom
+      // properties the rest of the page uses and re-read whenever the scheme changes.
+      function theme() {
+        const cs = getComputedStyle(document.documentElement);
+        const t = n => cs.getPropertyValue(n).trim();
+        return { ink: t('--ink'), muted: t('--muted'), grid: t('--grid'),
+                 sig: t('--sig'), spec: t('--spec') };
+      }
+
+      matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+        if (lastMsg) render(lastMsg); else clear();
+      });
+
+      function fit(cvs) {
+        cvs.width = cvs.clientWidth * devicePixelRatio;
+        cvs.height = cvs.clientHeight * devicePixelRatio;
+      }
+
+      function resize() {
+        fit(waveCvs);
+        fit(specCvs);
+        if (lastMsg) render(lastMsg); else clear();
+      }
+      addEventListener('resize', resize);
+      resize();
+
+      autoscaleEl.addEventListener('change', () => { if (lastMsg) render(lastMsg); });
+
+      // 'input' rather than 'change' so the graph follows each keystroke instead of
+      // waiting for blur; between frames it is the only thing that redraws the FFT.
+      fftBinsEl.addEventListener('input', () => { if (lastMsg) render(lastMsg); });
+
+      // The button only issues the command; the stream reports what actually happened,
+      // so a recording started elsewhere still shows up here.
+      recordEl.addEventListener('click', async () => {
+        const stopping = recordEl.classList.contains('on');
+        recordEl.disabled = true;
+        recInfoEl.textContent = stopping ? 'uploading…' : 'starting…';
+        try {
+          const r = await fetch(stopping ? '/record/stop' : '/record/start',
+                                { method: 'POST' });
+          const d = await r.json();
+          if (d.error) {
+            recInfoEl.textContent = d.error;
+          } else if (stopping) {
+            recording = null;
+            setRecording(null);
+            recInfoEl.textContent = d.file_id
+              ? `uploaded ${d.filename} — ${d.seconds}s, ${d.samples} samples`
+              : (d.note || 'stopped');
+          }
+        } catch (err) {
+          recInfoEl.textContent = 'request failed';
+        }
+        recordEl.disabled = false;
+      });
+
+      function setRecording(rec) {
+        recording = rec;
+        const on = !!(rec && rec.active);
+        recordEl.classList.toggle('on', on);
+        recordEl.textContent = on ? 'Stop' : 'Record';
+        if (on) {
+          const lost = rec.lost_samples ? `, ${rec.lost_samples} lost` : '';
+          recInfoEl.textContent =
+            `recording ${rec.seconds.toFixed(1)}s · ${rec.samples} samples${lost}`;
+        }
+      }
+
+      // Shared by both panels: y from `ys`, x implied uniform across [0, o.xmax].
+      // o.mn / o.mx pin the y-range; omit either end to autoscale it.
+      function plot(cvs, ys, o) {
+        const c = theme();
+        const ctx = cvs.getContext('2d'),
+              w = cvs.width,
+              h = cvs.height,
+              p = 32 * devicePixelRatio;
+        ctx.clearRect(0, 0, w, h);
+        if (!ys || ys.length < 2) return;
+
+        let mn = o.mn !== undefined ? o.mn : Math.min(...ys),
+            mx = o.mx !== undefined ? o.mx : Math.max(...ys);
+        if (mn === mx) { mn -= 1; mx += 1; }
+
+        const yr = mx - mn,
+              X = i => p + (w - 2 * p) * i / (ys.length - 1),
+              Y = v => h - p - (h - 2 * p) * (v - mn) / yr;
+
+        ctx.strokeStyle = c.grid;
+        ctx.lineWidth = 1;
+        for (let g = 0; g <= 4; g++) {
+          const y = p + (h - 2 * p) * g / 4;
+          ctx.beginPath();
+          ctx.moveTo(p, y);
+          ctx.lineTo(w - p, y);
+          ctx.stroke();
+        }
+
+        ctx.strokeStyle = o.color;
+        ctx.lineWidth = 1.5 * devicePixelRatio;
+        ctx.beginPath();
+        for (let i = 0; i < ys.length; i++) {
+          const x = X(i), y = Y(ys[i]);
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        ctx.stroke();
+
+        ctx.fillStyle = c.muted;
+        ctx.font = (11.5 * devicePixelRatio) + 'px ui-sans-serif, system-ui, sans-serif';
+        ctx.fillText(mx.toFixed(3), 4, p + 4 * devicePixelRatio);
+        ctx.fillText(mn.toFixed(3), 4, h - p);
+
+        const xr = o.xmax.toFixed(o.xmax >= 100 ? 0 : 2) + ' ' + o.xunit;
+        ctx.fillText('0', p, h - 8 * devicePixelRatio);
+        ctx.fillText(xr, w - p - ctx.measureText(xr).width, h - 8 * devicePixelRatio);
+      }
+
+      function clear() {
+        plot(waveCvs, [], {});
+        plot(specCvs, [], {});
+        wstatsEl.innerHTML = '';
+        sstatsEl.innerHTML = '';
+      }
+
+      function stat(d) {
+        const n = d.length,
+              mean = d.reduce((a, b) => a + b, 0) / n;
+        return {
+          mean,
+          mn: Math.min(...d),
+          mx: Math.max(...d),
+          rms: Math.sqrt(d.reduce((a, b) => a + b * b, 0) / n)
+        };
+      }
+
+      function render(m) {
+        lastMsg = m;
+        const c = theme();
+        const u = m.units || '';
+        siglabelEl.textContent = 'signal' + (u ? ' (' + u + ')' : '');
+
+        // `data` is every 10th sample of the ~1 s window, so it still spans n/rate seconds.
+        const span = m.data.length * 10 / m.rate;
+        plot(waveCvs, m.data, Object.assign(
+          { color: c.sig, xmax: span, xunit: 's' },
+          autoscaleEl.checked ? {} : { mn: -10, mx: 10 }));
+
+        const s = stat(m.data);
+        wstatsEl.innerHTML =
+          `<div>mean <b>${s.mean.toFixed(4)}</b></div>` +
+          `<div>min <b>${s.mn.toFixed(4)}</b></div>` +
+          `<div>max <b>${s.mx.toFixed(4)}</b></div>` +
+          `<div>rms <b>${s.rms.toFixed(4)}</b> ${u}</div>`;
+
+        const f = m.fft;
+        if (!f) {
+          plot(specCvs, [], {});
+          sstatsEl.innerHTML = '<div>waiting for a full window…</div>';
+          return;
+        }
+        // Blank or invalid shows the whole spectrum; a number keeps the first N bins,
+        // which is a zoom into the low end rather than a re-thinning of the curve.
+        const want = parseInt(fftBinsEl.value, 10),
+              mags = want > 1 ? f.mags.slice(0, want) : f.mags;
+        plot(specCvs, mags, {
+          color: c.spec, mn: 0,
+          xmax: f.df * (mags.length - 1), xunit: 'Hz'
+        });
+        sstatsEl.innerHTML =
+          `<div>peak <b>${f.peak.freq.toFixed(1)} Hz</b></div>` +
+          `<div>amplitude <b>${f.peak.mag.toFixed(4)}</b> ${u}</div>` +
+          `<div>bin <b>${f.df.toFixed(2)} Hz</b></div>`;
+      }
+
+      const es = new EventSource('/stream');
+
+      es.onopen = () => { statusEl.textContent = 'connected'; };
+
+      es.onerror = () => {
+        statusEl.textContent = 'disconnected — retrying…';
+        statusEl.className = '';
+      };
+
+      es.onmessage = e => {
+        const m = JSON.parse(e.data);
+        if (m.type === 'samples') {
+          statusEl.textContent =
+            `${m.device}/${m.channel} · ${m.rate} Hz`;
+          statusEl.className = 'live';
+          recordEl.disabled = false;
+          if (m.recording || recording) setRecording(m.recording);
+          render(m);
+        } else {
+          statusEl.textContent =
+            'idle — no monitor active (tick ' + m.tick + '). Call start_monitor.';
+          statusEl.className = '';
+          lastMsg = null;
+          recordEl.disabled = true;
+          setRecording(null);
+          clear();
+        }
+      };
+    </script>
+  </body>
+</html>

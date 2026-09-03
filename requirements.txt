@@ -1,0 +1,27 @@
+nidaqmx>=1.5
+grpcio>=1.80
+protobuf>=6.0
+# The upper bound is load-bearing: mcp 2.x renames FastMCP to MCPServer and changes
+# the tool APIs, so an unpinned install picks up 2.x and fails at import.
+mcp>=1.0,<2
+numpy>=1.24
+pydantic
+
+# Comes in under mcp, but server.py imports it directly for the dashboard, SSE feed
+# and record routes — so it is declared rather than relied on second-hand.
+starlette
+
+# Reached for by nidaqmx's generated gRPC stubs rather than imported directly. Missing
+# any of them surfaces as "No module named 'ni'" or "No module named 'session_pb2'"
+# on the first DAQ tool call, not at import.
+ni.protobuf.types>=1.1
+hightime>=1.0
+nitypes>=1.1.0.dev2
+
+# TDMS read/write, and the filtering and statistics behind vibration.py.
+npTDMS>=1.7
+scipy>=1.11
+
+# systemlink.py posts to the File service directly; config.py reads .env.
+requests>=2.31
+python-dotenv>=1.0

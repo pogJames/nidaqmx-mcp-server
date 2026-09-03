@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Addresses and credentials. .env.example is the tracked template.
+.env
+
+# Local state, all reproducible: downloads are re-fetchable by file id, and the run
+# database is rebuilt by run_store. Plans are authored documents and stay tracked.
+data/cache/
+data/runs.db

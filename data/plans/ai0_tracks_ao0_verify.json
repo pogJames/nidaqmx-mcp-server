@@ -1,0 +1,59 @@
+{
+  "cleanup": [
+    {
+      "action": "stop",
+      "args": {
+        "target": "outputs"
+      },
+      "id": "off"
+    }
+  ],
+  "loop": {
+    "axes": [
+      {
+        "from": 0.5,
+        "name": "vsupply",
+        "step": 0.25,
+        "to": 5,
+        "unit": "V"
+      }
+    ],
+    "settle_ms": 50
+  },
+  "on_step_fail": "continue",
+  "plan_id": "ai0_tracks_ao0_verify",
+  "steps": [
+    {
+      "action": "set_voltage",
+      "args": {
+        "channel": "ao0",
+        "dev": "DAQ1Mod4",
+        "volts": "$vsupply"
+      },
+      "id": "drive"
+    },
+    {
+      "action": "measure_voltage",
+      "args": {
+        "channels": [
+          "ai0"
+        ],
+        "dev": "DAQ1Mod3",
+        "rate": 100,
+        "samples": 20
+      },
+      "id": "read",
+      "limits": [
+        {
+          "of": "$vsupply",
+          "op": "within_pct",
+          "stat": "mean",
+          "value": 2
+        }
+      ]
+    }
+  ],
+  "title": "DAQ1Mod3/ai0 tracks DAQ1Mod4/ao0, 0.5-5V",
+  "created_at": "2026-08-31T06:49:32+00:00",
+  "updated_at": "2026-09-01T06:30:58+00:00"
+}
