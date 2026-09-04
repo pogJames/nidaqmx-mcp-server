@@ -174,6 +174,68 @@ def _limited_steps(points: list[dict]) -> list[dict]:
     return rows
 
 
+def _bounds(row: dict) -> tuple[float | None, float | None]:
+    """The band the measurement had to land in, as (min, max); None on a side the limit
+    leaves open.
+
+    Every limit op is really a range; only the way it is written down differs. Deriving
+    one pair of numbers here means the table and the chart cannot disagree about what
+    was allowed, and neither has to know how the limit was spelled."""
+    op, limit = row.get("op"), row.get("limit")
+    if op in ("lt", "lte") and isinstance(limit, (int, float)):
+        return None, float(limit)
+    if op in ("gt", "gte") and isinstance(limit, (int, float)):
+        return float(limit), None
+    if op == "between" and isinstance(limit, dict):
+        return limit.get("min"), limit.get("max")
+    ref, allowed = row.get("reference"), row.get("allowed")
+    if isinstance(ref, (int, float)) and isinstance(allowed, (int, float)):
+        return ref - allowed, ref + allowed
+    return None, None
+
+
+def _passing_range(row: dict) -> str:
+    """The range as text. A one-sided op keeps its comparator, so a bound is never
+    mistaken for the endpoint of a closed band.
+
+    Six digits, not the default four: a 0.05% limit on 1 V has its bounds in the fifth,
+    and a range printed as "0.9995 – 1" is a wrong number, not a rounded one."""
+    lo, hi = _bounds(row)
+    if lo is None and hi is None:
+        return "—"
+    if lo is None:
+        return f"{'<' if row.get('op') == 'lt' else '≤'} {_fmt(hi, 6)}"
+    if hi is None:
+        return f"{'>' if row.get('op') == 'gt' else '≥'} {_fmt(lo, 6)}"
+    return f"{_fmt(lo, 6)} – {_fmt(hi, 6)}"
+
+
+def _target(row: dict) -> float | None:
+    """The value the point was aiming at: the middle of a closed range, or the bound
+    itself when only one side is specified — in both cases, the zero the error is
+    measured from."""
+    lo, hi = _bounds(row)
+    if lo is not None and hi is not None:
+        ref = row.get("reference")
+        return float(ref) if isinstance(ref, (int, float)) else (lo + hi) / 2
+    return hi if lo is None else lo
+
+
+def _error_pct(row: dict) -> float | None:
+    """The reading's error as a share of what the limit allowed: 100% is the edge of the
+    passing range, and the sign says which side of target it fell.
+
+    None when the limit is one-sided — there is no half-width to divide by, and inventing
+    one would make a bound look like a band. The table and the chart both hinge on this,
+    so it is computed once."""
+    lo, hi = _bounds(row)
+    measured, target = row.get("measured"), _target(row)
+    if lo is None or hi is None or not isinstance(measured, (int, float)):
+        return None
+    half = (hi - lo) / 2
+    return 100.0 * (measured - target) / half if half else None
+
+
 def _axis_label(rows: list[dict]) -> str:
     names = list(rows[0]["axes"]) if rows and rows[0]["axes"] else []
     return names[0] if names else "point"
@@ -181,88 +243,236 @@ def _axis_label(rows: list[dict]) -> str:
 
 # ---------- charts ----------
 
-def _margin_chart(rows: list[dict], unit: str = "") -> str:
-    """Margin per point: how much room each measurement had before it broke its limit.
+# Geometry shared by the two per-point charts. They differ only in what they put inside
+# the frame, so the frame is built once.
+_W, _H = 940, 320
+_PAD_L, _PAD_R, _PAD_T, _PAD_B = 76, 62, 20, 52
+_PLOT_W, _PLOT_H = _W - _PAD_L - _PAD_R, _H - _PAD_T - _PAD_B
+_LEFT, _RIGHT, _FLOOR = _PAD_L, _W - _PAD_R, _PAD_T + _PLOT_H
 
-    Margin rather than the raw reading, because a linearity sweep's measured-vs-setpoint
-    plot is a 45-degree line that hides everything interesting. Margin puts the limit at
-    zero, so distance from the axis is distance from failing and the sign is the verdict.
-    It is also the one quantity that means the same thing for every limit op."""
-    rows = [r for r in rows if isinstance(r.get("margin"), (int, float))]
-    if not rows:
-        return ""
 
-    w, h = 940, 300
-    pad_l, pad_r, pad_t, pad_b = 66, 16, 16, 52
-    plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+def _series(rows: list[dict]) -> list[dict]:
+    """The rows a per-point chart can draw, each carrying its error from target — in the
+    reading's own units and as a share of the passing range — and that range expressed
+    around the same zero. A row with no limit is stimulus-only and has nothing to place
+    on either axis."""
+    pts = []
+    for row in rows:
+        measured, target = row.get("measured"), _target(row)
+        if not isinstance(measured, (int, float)) or target is None:
+            continue
+        lo, hi = _bounds(row)
+        pts.append({"row": row, "err": measured - target, "pct": _error_pct(row),
+                    "x": next(iter(row["axes"].values()), row["index"]),
+                    "lo": None if lo is None else lo - target,
+                    "hi": None if hi is None else hi - target})
+    return pts
 
-    margins = [r["margin"] for r in rows]
-    span = max(max(margins), 0.0) - min(min(margins), 0.0)
-    span = span or 1.0
-    top, bottom = max(max(margins), 0.0) + span * .12, min(min(margins), 0.0) - span * .12
 
+def _path(pairs) -> str:
+    return "M " + " L ".join(f"{x:.1f} {y:.1f}" for x, y in pairs)
+
+
+def _frame(pts: list[dict], top: float, bottom: float, key: str, unit: str,
+           y_label: str, y_fmt=lambda v: _fmt(v, 3), ticks=None):
+    """Gridlines, tick labels and axis titles, plus the mappings the marks need.
+
+    `ticks` is (value, draw_line) pairs; a tick with no line labels a line the caller
+    draws itself, so the axis can read 0% and ±100% without those lines being doubled.
+    Defaults to five evenly spaced gridlines.
+
+    Returns the frame's SVG in two halves — what goes under the marks and what goes
+    over them — so a caller cannot accidentally paint an axis label beneath a dot."""
     def y_of(value: float) -> float:
-        return pad_t + plot_h * (top - value) / (top - bottom)
+        return _PAD_T + _PLOT_H * (top - value) / (top - bottom)
 
-    slot = plot_w / len(rows)
-    bar_w = min(slot * 0.62, 30)
-    zero_y = y_of(0.0)
-    key = _axis_label(rows)
+    slot = _PLOT_W / len(pts)
+    xs = [_PAD_L + slot * (i + .5) for i in range(len(pts))]
 
-    parts = [f'<svg viewBox="0 0 {w} {h}" role="img" '
-             f'aria-label="Margin to limit at each point">']
+    if ticks is None:
+        ticks = [(bottom + (top - bottom) * f, True) for f in (0, .25, .5, .75, 1)]
 
-    # Horizontal gridlines, recessive.
-    for frac in (0, .25, .5, .75, 1):
-        value = bottom + (top - bottom) * frac
+    under = []
+    for value, with_line in ticks:
         y = y_of(value)
-        parts.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{w - pad_r}" y2="{y:.1f}" '
-                     f'stroke="var(--grid)" stroke-width="1"/>')
-        parts.append(f'<text x="{pad_l - 10}" y="{y + 4:.1f}" text-anchor="end" '
-                     f'font-size="11" fill="var(--muted)">{_fmt(value, 3)}</text>')
+        if with_line:
+            under.append(f'<line x1="{_LEFT}" y1="{y:.1f}" x2="{_RIGHT}" y2="{y:.1f}" '
+                         f'stroke="var(--grid)" stroke-width="1"/>')
+        under.append(f'<text x="{_LEFT - 10}" y="{y + 4:.1f}" text-anchor="end" '
+                     f'font-size="11" fill="var(--muted)">{y_fmt(value)}</text>')
 
-    # The limit itself. Everything below this line failed.
-    parts.append(f'<line x1="{pad_l}" y1="{zero_y:.1f}" x2="{w - pad_r}" y2="{zero_y:.1f}" '
-                 f'stroke="var(--ink-2)" stroke-width="1.5" stroke-dasharray="5 3"/>')
-    parts.append(f'<text x="{w - pad_r}" y="{zero_y - 7:.1f}" text-anchor="end" '
-                 f'font-size="11" fill="var(--ink-2)">limit</text>')
+    over = []
+    for i, (cx, p) in enumerate(zip(xs, pts)):
+        if len(pts) <= 24 or i % max(len(pts) // 12, 1) == 0:
+            over.append(f'<text x="{cx:.1f}" y="{_H - _PAD_B + 26:.1f}" '
+                        f'text-anchor="middle" font-size="11" fill="var(--muted)">'
+                        f'{_fmt(p["x"], 3)}</text>')
+    over.append(f'<text x="{_PAD_L + _PLOT_W/2:.1f}" y="{_H - 6}" text-anchor="middle" '
+                f'font-size="11.5" fill="var(--ink-2)">{_e(key)}'
+                f'{(" (" + _e(unit) + ")") if unit else ""}</text>')
+    over.append(f'<text transform="translate(16 {_PAD_T + _PLOT_H/2:.0f}) rotate(-90)" '
+                f'text-anchor="middle" font-size="11.5" fill="var(--ink-2)">'
+                f'{_e(y_label)}</text>')
+    return y_of, xs, slot, under, over
 
-    for i, row in enumerate(rows):
-        cx = pad_l + slot * (i + .5)
-        margin = row["margin"]
-        failed = row["result"] != "PASS"
+
+def _marks(pts: list[dict], xs: list[float], slot: float, y_of, tip_of,
+           field: str = "err") -> list[str]:
+    """The readings themselves: a trace through them, a mark per point, a hit target.
+    `field` names the quantity this chart plots, which is what its y scale was built on.
+
+    The verdict must survive greyscale and a red-green viewer, so shape carries it as
+    well as colour — a filled dot passed, a cross did not."""
+    parts = [f'<path d="{_path([(x, y_of(p[field])) for x, p in zip(xs, pts)])}" '
+             f'fill="none" stroke="var(--ink-2)" stroke-width="1.25" opacity=".33"/>']
+    for cx, p in zip(xs, pts):
+        failed = p["row"]["result"] != "PASS"
         colour = "var(--critical)" if failed else "var(--good)"
-        y = y_of(margin)
-        top_y, bar_h = min(y, zero_y), max(abs(y - zero_y), 1.5)
-
-        axis_value = next(iter(row["axes"].values()), row["index"])
-        tip = (f"{key} = {_fmt(axis_value)}{(' ' + unit) if unit else ''}\n"
-               f"{row['result']}   margin {_fmt(margin)}\n"
-               f"measured {_fmt(row.get('measured'))}"
-               + (f"\nlimit {_fmt(row.get('allowed') or row.get('limit'))}"
-                  if row.get("allowed") or row.get("limit") is not None else ""))
-
-        parts.append(f'<rect x="{cx - bar_w/2:.1f}" y="{top_y:.1f}" width="{bar_w:.1f}" '
-                     f'height="{bar_h:.1f}" rx="3" fill="{colour}" opacity=".88"/>')
-        # Glyph above/below the bar: the verdict must survive being read in greyscale
-        # or by a red-green colourblind viewer, so shape carries it too.
-        gy = (top_y - 7) if margin >= 0 else (top_y + bar_h + 15)
-        parts.append(f'<text x="{cx:.1f}" y="{gy:.1f}" text-anchor="middle" '
-                     f'font-size="12" fill="{colour}">'
-                     f'{PASS_GLYPH if not failed else FAIL_GLYPH}</text>')
+        y = y_of(p[field])
+        if failed:
+            parts.append(f'<text x="{cx:.1f}" y="{y + 5:.1f}" text-anchor="middle" '
+                         f'font-size="14" fill="{colour}">{FAIL_GLYPH}</text>')
+        else:
+            parts.append(f'<circle cx="{cx:.1f}" cy="{y:.1f}" r="4" fill="{colour}" '
+                         f'opacity=".9"/>')
         # Hit target wider than the mark.
-        parts.append(f'<rect x="{cx - slot/2:.1f}" y="{pad_t}" width="{slot:.1f}" '
-                     f'height="{plot_h}" fill="transparent" data-tip="{_e(tip)}"/>')
+        parts.append(f'<rect x="{cx - slot/2:.1f}" y="{_PAD_T}" width="{slot:.1f}" '
+                     f'height="{_PLOT_H}" fill="transparent" data-tip="{_e(tip_of(p))}"/>')
+    return parts
 
-        if len(rows) <= 24 or i % max(len(rows) // 12, 1) == 0:
-            parts.append(f'<text x="{cx:.1f}" y="{h - pad_b + 26:.1f}" text-anchor="middle" '
-                         f'font-size="11" fill="var(--muted)">{_fmt(axis_value, 3)}</text>')
 
-    parts.append(f'<text x="{pad_l + plot_w/2:.1f}" y="{h - 6}" text-anchor="middle" '
-                 f'font-size="11.5" fill="var(--ink-2)">{_e(key)}'
-                 f'{(" (" + _e(unit) + ")") if unit else ""}</text>')
-    parts.append("</svg>")
-    return "".join(parts)
+def _envelope_chart(pts: list[dict], rows: list[dict], unit: str) -> str:
+    """Each reading's distance from what it was aiming at, inside the range it had to
+    stay in.
+
+    Not measured-against-setpoint: a tracking sweep plots as a 45-degree line where a 1%
+    error at 5 V is a pixel of thickness, so the one thing under test is the one thing
+    invisible. Subtracting the target puts every point on a common zero, which makes the
+    shaded band the pass criterion itself — a dot outside it is the failure, in the same
+    units the table quotes. A percentage tolerance widens with the setpoint, and that
+    flare is the shape of the limit rather than an artefact of the plot."""
+    # Zero is always in frame: it is the line the whole chart is read against.
+    values = [0.0] + [p["err"] for p in pts]
+    values += [p[k] for p in pts for k in ("lo", "hi") if p[k] is not None]
+    span = (max(values) - min(values)) or 1.0
+    top, bottom = max(values) + span * .18, min(values) - span * .18
+
+    key = _axis_label(rows)
+    y_of, xs, slot, under, over = _frame(
+        pts, top, bottom, key, unit,
+        f"measured − target{(' (' + unit + ')') if unit else ''}")
+
+    # An open side runs off the plot rather than pretending to a bound it never had.
+    def edge(side: str, open_y: float) -> list[tuple[float, float]]:
+        ys = [y_of(p[side]) if p[side] is not None else open_y for p in pts]
+        return [(_LEFT, ys[0])] + list(zip(xs, ys)) + [(_RIGHT, ys[-1])]
+
+    upper, lower = edge("hi", _PAD_T), edge("lo", _FLOOR)
+    band = [f'<path d="{_path(upper)} L {_path(reversed(lower))[2:]} Z" '
+            f'fill="var(--band)" stroke="none"/>']
+    band += [f'<path d="{_path(pairs)}" fill="none" stroke="var(--accent)" '
+             f'stroke-width="1.25" stroke-dasharray="5 3" opacity=".85"/>'
+             for pairs in (upper, lower)]
+    band.append(f'<text x="{_RIGHT + 6}" y="{upper[-1][1] + 4:.1f}" font-size="11" '
+                f'fill="var(--accent)">passing</text>')
+    band.append(f'<line x1="{_LEFT}" y1="{y_of(0):.1f}" x2="{_RIGHT}" '
+                f'y2="{y_of(0):.1f}" stroke="var(--ink-2)" stroke-width="1.25" '
+                f'opacity=".7"/>')
+    band.append(f'<text x="{_RIGHT + 6}" y="{y_of(0) + 4:.1f}" font-size="11" '
+                f'fill="var(--ink-2)">target</text>')
+
+    def tip_of(p: dict) -> str:
+        return (f"{key} = {_fmt(p['x'])}{(' ' + unit) if unit else ''}\n"
+                f"{p['row']['result']}   measured {_fmt(p['row'].get('measured'), 6)}\n"
+                f"error {p['err']:+.4g}   passing {_passing_range(p['row'])}")
+
+    return (f'<svg viewBox="0 0 {_W} {_H}" role="img" aria-label="Error from target at '
+            f'each point, against the passing range">'
+            + "".join(under + band + _marks(pts, xs, slot, y_of, tip_of) + over)
+            + "</svg>")
+
+
+def _normalized_chart(pts: list[dict], rows: list[dict], unit: str) -> str:
+    """The same errors as a share of what each point was allowed: ±100% is the edge.
+
+    Dividing by the allowance is what makes points at 0.5 V and 5 V comparable when the
+    tolerance between them has grown tenfold — the physical-units view puts them on one
+    scale set by the widest limit, which flattens the readings against zero and hides
+    exactly the structure worth seeing. Here the fine detail is the whole plot, and the
+    price is that the edge often sits off-scale, so it is stated in words when it does."""
+    key = _axis_label(rows)
+    pcts = [p["pct"] for p in pts]
+    extent = max(abs(v) for v in pcts + [0.0]) or 1.0
+    # Show the edges when the readings come anywhere near them; otherwise let the data
+    # set the scale and say in words where the edges went.
+    values = pcts + [0.0] + ([100.0, -100.0] if extent * 1.8 >= 100 else [])
+    span = (max(values) - min(values)) or 1.0
+    top, bottom = max(values) + span * .18, min(values) - span * .18
+    edges_shown = top >= 100 and bottom <= -100
+
+    # The axis says the only five numbers worth naming: the two extremes of the scale,
+    # the target, and the two edges. Each of the inner three already has a line of its
+    # own below, so the tick only labels it — an evenly spaced grid on top of those
+    # would be four more lines saying nothing.
+    ticks = [(top, True), (bottom, True), (0.0, False)]
+    ticks += [(e, False) for e in (100.0, -100.0) if edges_shown]
+    y_of, xs, slot, under, over = _frame(
+        pts, top, bottom, key, unit, "error (% of what the limit allowed)",
+        y_fmt=lambda v: f"{v:+.3g}%" if v else "0%", ticks=ticks)
+
+    scale = []
+    if edges_shown:
+        scale.append(f'<rect x="{_LEFT}" y="{y_of(100):.1f}" width="{_PLOT_W}" '
+                     f'height="{y_of(-100) - y_of(100):.1f}" fill="var(--band)"/>')
+        for edge in (100.0, -100.0):
+            scale.append(f'<line x1="{_LEFT}" y1="{y_of(edge):.1f}" x2="{_RIGHT}" '
+                         f'y2="{y_of(edge):.1f}" stroke="var(--accent)" '
+                         f'stroke-width="1.25" stroke-dasharray="5 3" opacity=".85"/>')
+    else:
+        # The range is off-scale, which is itself the finding: nothing came close to it.
+        scale.append(f'<rect x="{_LEFT}" y="{_PAD_T}" width="{_PLOT_W}" '
+                     f'height="{_PLOT_H}" fill="var(--band)"/>')
+        scale.append(f'<text x="{_RIGHT - 8}" y="{_PAD_T + 15}" text-anchor="end" '
+                     f'font-size="11" fill="var(--accent)">'
+                     f'passing range ±100% — off scale, nothing past '
+                     f'{extent:+.3g}%</text>')
+    scale.append(f'<line x1="{_LEFT}" y1="{y_of(0):.1f}" x2="{_RIGHT}" y2="{y_of(0):.1f}" '
+                 f'stroke="var(--ink-2)" stroke-width="1.25" opacity=".7"/>')
+
+    def tip_of(p: dict) -> str:
+        return (f"{key} = {_fmt(p['x'])}{(' ' + unit) if unit else ''}\n"
+                f"{p['row']['result']}   measured {_fmt(p['row'].get('measured'), 6)}\n"
+                f"error {p['pct']:+.3g}% of the passing range\n"
+                f"{_fmt(p['err'])} from target   passing {_passing_range(p['row'])}")
+
+    return (f'<svg viewBox="0 0 {_W} {_H}" role="img" aria-label="Error at each point as '
+            f'a percentage of the allowance, where 100 percent is the limit">'
+            + "".join(under + scale
+                      + _marks(pts, xs, slot, y_of, tip_of, "pct") + over)
+            + "</svg>")
+
+
+def _sweep_chart(rows: list[dict], unit: str = "") -> dict:
+    """The sweep's chart, in whichever frame the limits allow.
+
+    Normalized when every point has a two-sided limit, because a percentage of the
+    allowance is the more useful axis and the only one on which points with different
+    tolerances are comparable. A one-sided limit has no half-width to divide by, so
+    those plans keep the physical-units view rather than being left without a chart."""
+    pts = _series(rows)
+    if not pts:
+        return {"svg": "", "title": "", "note": ""}
+    if all(p["pct"] is not None for p in pts):
+        return {"svg": _normalized_chart(pts, rows, unit),
+                "title": "Error chart",
+                "note": "Each reading's distance from what it was aiming at, as a share "
+                        "of what its limit allowed. 0% is target and ±100% are the edges "
+                        "of the passing range; the sign says which side it fell."}
+    return {"svg": _envelope_chart(pts, rows, unit),
+            "title": "Error vs passing range",
+            "note": "Each reading minus the value it was aiming at. The band is the "
+                    "range it had to stay inside — it widens with the setpoint when the "
+                    "limit is a percentage."}
 
 
 def _shmoo_grid(rows: list[dict]) -> str:
@@ -465,18 +675,19 @@ def _points_table(rows: list[dict], unit: str) -> str:
     key = _axis_label(rows)
     head = (f"<tr><th class='l'>#</th><th class='l'>{_e(key)}"
             f"{(' (' + _e(unit) + ')') if unit else ''}</th>"
-            "<th>measured</th><th>reference</th><th>allowed</th>"
-            "<th>margin</th><th class='l'>result</th></tr>")
+            "<th>measured</th><th>target</th><th>passing range</th>"
+            "<th>error (%)</th><th class='l'>result</th></tr>")
     body = []
     for row in rows:
         axis_value = next(iter(row["axes"].values()), row["index"])
+        pct = _error_pct(row)
         body.append(
             f"<tr><td class='l'>{row['index']}</td>"
             f"<td class='l'>{_fmt(axis_value)}</td>"
-            f"<td>{_fmt(row.get('measured'))}</td>"
-            f"<td>{_fmt(row.get('reference'))}</td>"
-            f"<td>{_fmt(row.get('allowed') or row.get('limit'))}</td>"
-            f"<td>{_fmt(row.get('margin'))}</td>"
+            f"<td>{_fmt(row.get('measured'), 6)}</td>"
+            f"<td>{_fmt(_target(row), 6)}</td>"
+            f"<td>{_e(_passing_range(row))}</td>"
+            f"<td>{'—' if pct is None else f'{pct:+.3g}'}</td>"
             f"<td class='l'>{_result_pill(row['result'])}</td></tr>")
     return f'<div class="scroll"><table><thead>{head}</thead><tbody>{"".join(body)}</tbody></table></div>'
 
@@ -497,13 +708,11 @@ def render(record: dict, plan: dict) -> str:
     title = plan.get("title") or record["plan_id"]
 
     if shape == "shmoo":
-        chart = _shmoo_grid(rows)
+        section = {"svg": _shmoo_grid(rows), "title": "Shmoo", "note": ""}
     elif shape == "sweep":
-        chart = _margin_chart(rows, unit)
+        section = _sweep_chart(rows, unit)
     else:
-        chart = ""
-
-    failures = [r for r in rows if r["result"] != "PASS"]
+        section = {"svg": "", "title": "", "note": ""}
 
     body = [
         '<div class="wrap">',
@@ -520,33 +729,40 @@ def render(record: dict, plan: dict) -> str:
         "</div>",
     ]
 
-    if chart:
+    if section["svg"]:
+        shmoo = shape == "shmoo"
+        legend = ('<div class="legend">'
+                  f'<span style="color:var(--good)">'
+                  f'{PASS_GLYPH if shmoo else "●"} pass</span>'
+                  f'<span style="color:var(--critical)">{FAIL_GLYPH} fail</span>'
+                  + ("" if shmoo else '<span style="color:var(--accent)">▨ passing '
+                                      'range</span>') + "</div>")
         body += [
-            f"<h2>{'Shmoo' if shape == 'shmoo' else 'Margin to limit'}</h2>",
-            '<div class="card">',
-            '<div class="legend">'
-            f'<span style="color:var(--good)">{PASS_GLYPH} pass</span>'
-            f'<span style="color:var(--critical)">{FAIL_GLYPH} fail</span></div>',
-            f'<div class="chart">{chart}<div class="tip"></div></div>',
+            f'<h2>{_e(section["title"])}</h2>',
+            '<div class="card">', legend,
+            f'<div class="chart">{section["svg"]}<div class="tip"></div></div>',
+            f'<p class="note">{_e(section["note"])}</p>' if section["note"] else "",
             "</div>",
         ]
 
-    if failures:
-        body += [f"<h2>Failures ({len(failures)})</h2>",
-                 '<div class="card">', _points_table(failures, unit), "</div>"]
-
     if rows:
-        body += ["<h2>All points</h2>", '<div class="card">',
+        body += ["<h2>Test Results</h2>", '<div class="card">',
                  _points_table(rows, unit), "</div>"]
+
+    body += [
+        "<h2>Test plan</h2>",
+        '<div class="card">'
+        + _plan_diagram(plan, record["progress"]["point_count"] or 1) + "</div>",
+    ]
 
     if record.get("log"):
         body += ["<h2>Event log</h2>", _log_block(record["log"])]
 
+    # The plan JSON is the appendix: exact, occasionally needed, and never what a reader
+    # is here for. It sits below everything, collapsed and outside any card.
     body += [
-        "<h2>Plan as executed</h2>",
-        '<div class="card">' + _plan_diagram(plan, record["progress"]["point_count"] or 1)
-        + "<details><summary>Show the underlying JSON</summary>"
-        f"<pre>{_e(json.dumps(plan, indent=2))}</pre></details></div>",
+        "<details><summary>Show the underlying JSON</summary>"
+        f"<pre>{_e(json.dumps(plan, indent=2))}</pre></details>",
         "</div>",
     ]
 

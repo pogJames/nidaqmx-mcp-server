@@ -14,9 +14,11 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, Field
 
 import reports
 import systemlink
@@ -30,8 +32,21 @@ _EXTRA_CSS = """
 .reading { background: var(--card); border: 1px solid var(--rule); border-left: 3px
   solid var(--accent); border-radius: 8px; padding: 14px 16px; margin: 16px 0 4px;
   font-size: 15px; line-height: 1.55; }
+.reading .finding { display: flex; gap: 12px; align-items: baseline;
+  justify-content: space-between; font-weight: 560; }
+.reading .conf { font-size: 11.5px; font-weight: 640; text-transform: uppercase;
+  letter-spacing: .05em; white-space: nowrap; }
+.reading .row { display: flex; gap: 12px; font-size: 13.5px; color: var(--ink-2);
+  margin-top: 7px; }
+.reading .row b { flex: none; width: 74px; font-weight: 560; color: var(--muted);
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: .045em;
+  padding-top: 2px; }
+/* The action is the row a reader acts on: same shape as the rows around it, lifted out
+   of their muted grey to full ink, with the accent on its label. */
+.reading .row.act { color: var(--ink); font-weight: 500; }
+.reading .row.act b { color: var(--accent); }
 .reading .who { display: block; font-size: 11.5px; color: var(--muted);
-  margin-top: 8px; }
+  margin-top: 10px; }
 .lead { font-weight: 600; }
 .bar { display: inline-block; height: 9px; border-radius: 2px;
   background: var(--accent); vertical-align: middle; }
@@ -49,6 +64,59 @@ table.prose td { white-space: normal; text-align: left; line-height: 1.5;
 table.prose td:first-child { white-space: nowrap; vertical-align: top;
   width: 1%; color: var(--ink); }
 """
+
+
+# THE READING ====================================================================
+# The one part of the page the analysis does not produce. A free paragraph left the
+# caller free to assert a diagnosis and skip the numbers behind it; the fields below
+# are what the schema makes it say instead, and MCP shows their descriptions to the
+# caller as it composes the call.
+
+Confidence = Literal["strong", "tentative", "inconclusive"]
+
+CONFIDENCE: dict[str, tuple[str, str]] = {          # label, colour
+    "strong": ("Strong", "var(--critical)"),
+    "tentative": ("Tentative", "var(--accent)"),
+    "inconclusive": ("Inconclusive", "var(--muted)"),
+}
+
+
+class Reading(BaseModel):
+    """Your interpretation of the metrics, shown above the evidence and attributed."""
+
+    finding: str = Field(description=
+        "One sentence naming what the spectrum supports, in the reader's terms: "
+        "'Outer-race defect on the drive-end bearing.' Say so plainly when the numbers "
+        "support no fault.")
+    evidence: str = Field(description=
+        "The figures behind it, from this analysis: the leading candidate and its "
+        "separation from the runner-up in dB, harmonics found, sidebands present or "
+        "absent, whether the bands agreed. Cite the numbers; do not restate the "
+        "indicator rubric.")
+    confidence: Confidence = Field(description=
+        "How far the evidence goes. 'strong' requires the bands to agree on one leader.")
+    action: str = Field(description=
+        "One executable next step: what to do, to what, and when. 'Inspect the "
+        "drive-end bearing at the next shutdown.' 'Re-run with rpm from the tach — this "
+        "used a nameplate value.' 'Trend weekly, no action now.'")
+    caveat: str = Field("", description="Optional: what would change this conclusion.")
+
+
+def _reading_block(reading: Reading) -> str:
+    """The reading as its own block: the finding reads as a sentence, and the action
+    sits where an operator looks first rather than at the end of a paragraph."""
+    label, colour = CONFIDENCE[reading.confidence]
+    rows = [("Evidence", reading.evidence, "row"),
+            ("Action", reading.action, "row act")]
+    if reading.caveat:
+        rows.append(("Caveat", reading.caveat, "row"))
+    return ('<div class="reading">'
+            f'<div class="finding">{_e(reading.finding)}'
+            f'<span class="conf" style="color:{colour}">{_e(label)}</span></div>'
+            + "".join(f'<div class="{cls}"><b>{k}</b><span>{_e(v)}</span></div>'
+                      for k, v, cls in rows)
+            + '<span class="who">Interpretation, written against the metrics below. '
+              'The analysis itself returns evidence only.</span></div>')
 
 
 def source_name(path: str | Path) -> str:
@@ -111,9 +179,8 @@ def _spectrum_svg(result: dict, freqs: np.ndarray, mags: np.ndarray) -> str:
     step = x_max / max(db.size - 1, 1)
 
     top = max(float(db.max()) * 1.12, 10.0)
-    h = 360
-    plot_h = h - PAD_T - 88          # room for two label rows plus the Hz axis
-    plot_w = W - PAD_L - PAD_R
+    plot_h = 360 - PAD_T - 88        # sized for two label rows; the page grows if the
+    plot_w = W - PAD_L - PAD_R       # labels need more, rather than the plot shrinking
 
     def X(hz: float) -> float:
         return PAD_L + plot_w * min(hz / x_max, 1.0)
@@ -121,8 +188,7 @@ def _spectrum_svg(result: dict, freqs: np.ndarray, mags: np.ndarray) -> str:
     def Y(value: float) -> float:
         return PAD_T + plot_h * (1 - min(value / top, 1.0))
 
-    p = [f'<svg viewBox="0 0 {W} {h}" role="img" aria-label="Envelope spectrum, '
-         f'{leader} leading at {cands[leader]["snr_db"]} dB">']
+    p: list[str] = []                # the header is written last: it carries the height
 
     for frac in (0, .25, .5, .75, 1):
         value = top * frac
@@ -179,23 +245,39 @@ def _spectrum_svg(result: dict, freqs: np.ndarray, mags: np.ndarray) -> str:
     axis_y = PAD_T + plot_h
     p.append(f'<line x1="{PAD_L}" y1="{axis_y}" x2="{W - PAD_R}" y2="{axis_y}" '
              f'stroke="var(--rule)" stroke-width="1"/>')
-    # Only fundamentals and the leader's harmonics get text. The rest are legible from
-    # their style, and labelling them collides — FTF's three orders sit 12 Hz apart.
-    labelled = [m for m in sorted(marks) if m[1] and m[2] in ("lead", "other", "lead_h")]
-    for i, (hz, label, kind) in enumerate(labelled):
+    # Every drawn line is named, harmonics included — an order is only useful if it can
+    # be told from its neighbours. The frequency is not repeated here: the axis below
+    # locates a peak, and "BPFO 107.3" spends the width that FTF's three orders, 12 Hz
+    # apart, need to sit side by side.
+    #
+    # Rows are assigned greedily by measured extent rather than alternated, because
+    # alternating only guarantees separation when labels arrive in step with the
+    # collisions — and clustered orders do not.
+    labelled = [m for m in sorted(marks) if m[1]]
+    row_ends: list[float] = []
+    for hz, label, kind in labelled:
         lead = kind == "lead"
+        half = len(label) * 3.1 + 4          # ~11px sans, plus a gap
+        x = X(hz)
+        row = next((r for r, end in enumerate(row_ends) if x - half > end),
+                   len(row_ends))
+        if row == len(row_ends):
+            row_ends.append(0.0)
+        row_ends[row] = x + half
         p.append(
-            f'<text x="{X(hz):.1f}" y="{axis_y + 16 + (i % 2) * 14}" '
-            f'text-anchor="middle" font-size="11" '
-            f'fill="{"var(--accent)" if kind != "other" else "var(--ink-2)"}" '
-            f'font-weight="{600 if lead else 400}">'
-            f'{_e(label)} <tspan fill="var(--muted)">{hz:.1f}</tspan></text>')
+            f'<text x="{x:.1f}" y="{axis_y + 16 + row * 13}" '
+            f'text-anchor="middle" font-size="{11 if kind in ("lead", "other") else 10}" '
+            f'fill="{"var(--accent)" if kind.startswith("lead") else "var(--ink-2)"}" '
+            f'opacity="{1 if kind in ("lead", "other") else .72}" '
+            f'font-weight="{600 if lead else 400}">{_e(label)}</text>')
 
     # A frequency axis of its own, so a peak can be located without a marker next to it.
+    # It clears however many label rows the orders needed.
+    ticks_y = axis_y + 16 + max(len(row_ends), 2) * 13 + 9
     step = next(s for s in (10, 20, 50, 100, 200, 500, 1000) if x_max / s <= 8)
     tick = 0.0
     while tick <= x_max:
-        p.append(f'<text x="{X(tick):.1f}" y="{axis_y + 47}" text-anchor="middle" '
+        p.append(f'<text x="{X(tick):.1f}" y="{ticks_y:.0f}" text-anchor="middle" '
                  f'font-size="10.5" fill="var(--muted)">{tick:.0f}</text>')
         p.append(f'<line x1="{X(tick):.1f}" y1="{axis_y}" x2="{X(tick):.1f}" '
                  f'y2="{axis_y + 4}" stroke="var(--rule)" stroke-width="1"/>')
@@ -208,9 +290,12 @@ def _spectrum_svg(result: dict, freqs: np.ndarray, mags: np.ndarray) -> str:
     p.append(f'<text x="15" y="{mid_y:.1f}" text-anchor="middle" font-size="11.5" '
              f'fill="var(--ink-2)" transform="rotate(-90 15 {mid_y:.1f})">'
              f'dB over noise floor</text>')
+    h = ticks_y + 24
     p.append(f'<text x="{PAD_L + plot_w / 2:.1f}" y="{h - 6}" text-anchor="middle" '
              f'font-size="11.5" fill="var(--ink-2)">Hz</text>')
     p.append("</svg>")
+    p.insert(0, f'<svg viewBox="0 0 {W} {h:.0f}" role="img" aria-label="Envelope analysis, '
+                f'{leader} leading at {cands[leader]["snr_db"]} dB">')
     return "".join(p)
 
 
@@ -224,11 +309,11 @@ def _rule(colour: str, dash: str = "", width: float = 1.8) -> str:
 
 def _legend(leader: str) -> str:
     items = [
-        (_rule("var(--accent)"), f"{leader} (leading)"),
-        (_rule("var(--accent)", ' stroke-dasharray="6 4"', 1.2), "its harmonics"),
+        (_rule("var(--accent)"), f"{leader} (leading fault)"),
+        (_rule("var(--accent)", ' stroke-dasharray="6 4"', 1.2), "higher harmonics"),
         (_rule("var(--accent)", ' stroke-dasharray="1.5 3"', 1.0), "shaft sidebands"),
-        (_rule("var(--ink-2)", "", 1.3), "other candidates"),
-        (_rule("var(--ink-2)", ' stroke-dasharray="6 4"', 1.0), "their harmonics"),
+        (_rule("var(--ink-2)", "", 1.3), "other faults"),
+        (_rule("var(--ink-2)", ' stroke-dasharray="6 4"', 1.0), "other higher harmonics"),
     ]
     return ('<div class="legend">'
             + "".join(f"<span>{svg}{_e(text)}</span>" for svg, text in items)
@@ -341,7 +426,7 @@ def _candidates_table(result: dict) -> str:
             f"<td>{c['harmonics_found']} of {len(c['harmonic_snr_db'])}</td>"
             f"<td>{c['sidebands_found']} of 2</td></tr>")
     return (
-        "<table><thead><tr><th class='l'>candidate</th><th>predicted Hz</th>"
+        "<table><thead><tr><th class='l'>fault</th><th>predicted Hz</th>"
         "<th>found at</th><th>offset</th><th>SNR dB</th><th>harmonics 1x 2x 3x</th>"
         "<th>present</th><th>sidebands</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>")
@@ -374,7 +459,7 @@ def _bands_table(result: dict) -> str:
 
 # PAGE ============================================================================
 
-def render(result: dict, samples: np.ndarray, reading: str = "") -> str:
+def render(result: dict, samples: np.ndarray, reading: Reading | None = None) -> str:
     """The full page. `reading` is the caller's interpretation, shown as theirs."""
     band = tuple(result["band"]["band_hz"])
     freqs, mags = vibration.envelope_spectrum(samples, result["rate"], band)
@@ -394,26 +479,25 @@ def render(result: dict, samples: np.ndarray, reading: str = "") -> str:
         f'{result["duration_s"]:.1f} s · band {band[0]:.0f}–{band[1]:.0f} Hz</p>',
     ]
 
-    if reading:
-        body.append(f'<div class="reading">{_e(reading)}'
-                    f'<span class="who">Interpretation, written against the metrics '
-                    f'below. The analysis itself returns evidence only.</span></div>')
+    if reading is not None:
+        body.append(_reading_block(reading))
 
     body += [
         _tiles(result),
-        "<h2>Envelope spectrum</h2>",
+        "<h2>Envelope analysis</h2>",
         '<div class="card">',
         _legend(leader),
         f'<div class="chart">{_spectrum_svg(result, freqs, mags)}</div>',
         "</div>",
-        "<h2>Candidates</h2>",
+        "<h2>Faults comparison</h2>",
         f'<div class="card">{_candidates_table(result)}'
-        f'<div class="agree">◆ leads. <b>offset</b> is predicted minus found — a large '
-        f'one means the rpm is wrong. Harmonics and sidebands count above '
-        f'{result["present_threshold_db"]:.0f} dB.</div></div>',
-        "<h2>Band sensitivity</h2>",
+        f'<div class="agree"><b>SNR dB</b> is peak height over the local noise floor: '
+        f'+6 dB is twice it, +20 dB ten times. It tracks how cleanly a defect rings, '
+        f'not severity — compare faults here, not an absolute figure. Harmonics and '
+        f'sidebands count above {result["present_threshold_db"]:.0f} dB.</div></div>',
+        "<h2>Bands comparison</h2>",
         f'<div class="card">{_bands_table(result)}</div>',
-        "<h2>Waveform</h2>",
+        "<h2>Waveform sample</h2>",
         f'<div class="card">{_waveform_legend(leader, period_s)}'
         f'<div class="chart">'
         f'{_waveform_svg(np.asarray(samples, dtype=float).ravel(), result["rate"], period_s)}'
@@ -448,15 +532,19 @@ def install(mcp: FastMCP) -> None:
         bearing: vibration.BearingName = "skf6205",
         geometry: vibration.Bearing | None = None,
         band_hz: list[float] | None = None,
-        reading: str = "",
+        reading: Reading | None = None,
     ) -> dict:
         """Render one vibration analysis as a standalone HTML report and upload it to
         SystemLink. Same arguments as analyze_vibration, plus `reading`.
 
-        `reading` is your interpretation of the metrics — the sentence a person should
-        see first — and it is shown as an interpretation, attributed, above the
-        evidence. Run analyze_vibration first, decide what the numbers support, then
-        pass that here. Leave it empty and the page shows evidence with no conclusion.
+        `reading` is your interpretation, shown attributed above the evidence: what the
+        spectrum supports, the figures behind it, how far they go, and the one thing to
+        do next. Run analyze_vibration first, decide what the numbers support, then pass
+        that here. Omit it and the page shows evidence with no conclusion.
+
+        `confidence: "strong"` is rejected when the band sweep disagrees on the leader —
+        the page would then contradict itself, and the band table is the check that
+        exists to catch it.
 
         The page is self-contained: envelope spectrum with every predicted frequency
         marked, the candidate table, a band-sensitivity check showing whether the
@@ -469,6 +557,16 @@ def install(mcp: FastMCP) -> None:
         result = vibration.analyze(
             loaded["samples"], loaded["rate"], speed, bearing=bearing,
             geometry=geometry, band_hz=tuple(band_hz) if band_hz else None)
+        # The band sweep is the evidence against its own headline: if the leader moves
+        # with the filter, the filter chose it. Refuse the claim rather than print it
+        # above a table that contradicts it.
+        leaders = {a["leader"] for a in result["band"]["alternatives"]}
+        if reading is not None and reading.confidence == "strong" and len(leaders) > 1:
+            raise ValueError(
+                f"bands disagree on the leader ({', '.join(sorted(leaders))}), so "
+                f"confidence 'strong' is not supported by this analysis — use "
+                f"'tentative' or 'inconclusive'")
+
         real_name = source_name(loaded["path"])
         result["source"] = {"path": loaded["path"], "name": real_name,
                             "channel": loaded["channel"],
