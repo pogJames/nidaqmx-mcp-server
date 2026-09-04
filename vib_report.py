@@ -29,6 +29,11 @@ from reports import _e, _fmt
 W, PAD_L, PAD_R, PAD_T = 940, 66, 16, 18
 
 _EXTRA_CSS = """
+:root { --spec: #c16302; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --spec: #f68b35; }
+}
+:root[data-theme="dark"] { --spec: #f68b35; }
 .reading { background: var(--card); border: 1px solid var(--rule); border-left: 3px
   solid var(--accent); border-radius: 8px; padding: 14px 16px; margin: 16px 0 4px;
   font-size: 15px; line-height: 1.55; }
@@ -41,10 +46,8 @@ _EXTRA_CSS = """
 .reading .row b { flex: none; width: 74px; font-weight: 560; color: var(--muted);
   font-size: 11.5px; text-transform: uppercase; letter-spacing: .045em;
   padding-top: 2px; }
-/* The action is the row a reader acts on: same shape as the rows around it, lifted out
-   of their muted grey to full ink, with the accent on its label. */
 .reading .row.act { color: var(--ink); font-weight: 500; }
-.reading .row.act b { color: var(--accent); }
+.reading .row.act b { color: var(--ink); }
 .reading .who { display: block; font-size: 11.5px; color: var(--muted);
   margin-top: 10px; }
 .lead { font-weight: 600; }
@@ -52,13 +55,9 @@ _EXTRA_CSS = """
   background: var(--accent); vertical-align: middle; }
 .agree { color: var(--ink-2); font-size: 12.5px; margin-top: 10px; }
 
-/* The shared rule is `svg { display:block; width:100% }`, which is right for a chart
-   and would stretch a legend sample across the whole card. */
 .legend svg { display: inline-block; width: 26px; height: 10px; flex: none; }
 .legend span { gap: 7px; }
 
-/* The shared table rule is nowrap, which is right for numbers and wrong for the
-   indicator sentences — they overshoot the card. This table holds prose. */
 table.prose td { white-space: normal; text-align: left; line-height: 1.5;
   color: var(--ink-2); }
 table.prose td:first-child { white-space: nowrap; vertical-align: top;
@@ -106,10 +105,10 @@ def _reading_block(reading: Reading) -> str:
     """The reading as its own block: the finding reads as a sentence, and the action
     sits where an operator looks first rather than at the end of a paragraph."""
     label, colour = CONFIDENCE[reading.confidence]
-    rows = [("Evidence", reading.evidence, "row"),
+    rows = [("Scope", reading.evidence, "row"),
             ("Action", reading.action, "row act")]
     if reading.caveat:
-        rows.append(("Caveat", reading.caveat, "row"))
+        rows.append(("Insight", reading.caveat, "row"))
     return ('<div class="reading">'
             f'<div class="finding">{_e(reading.finding)}'
             f'<span class="conf" style="color:{colour}">{_e(label)}</span></div>'
@@ -221,11 +220,15 @@ def _spectrum_svg(result: dict, freqs: np.ndarray, mags: np.ndarray) -> str:
             marks.append((hz, "", "side"))
 
     STYLE = {                                  # width, opacity, dash, colour
-        "lead":    (1.8, 0.90, "", "var(--accent)"),
-        "lead_h":  (1.2, 0.50, ' stroke-dasharray="6 4"', "var(--accent)"),
-        "side":    (1.0, 0.42, ' stroke-dasharray="1.5 3"', "var(--accent)"),
-        "other":   (1.3, 0.55, "", "var(--ink-2)"),
-        "other_h": (1.0, 0.28, ' stroke-dasharray="6 4"', "var(--ink-2)"),
+        # A dashed line at a given opacity reads fainter than a solid one at the same
+        # value — half of it is gaps — so the dashed styles sit higher than the ranking
+        # alone would put them. Width separates the leading fault's family from the
+        # others; inside each family the dash pattern does the separating.
+        "lead":    (2.5, 0.95, "", "var(--accent)"),
+        "lead_h":  (2.0, 0.80, ' stroke-dasharray="7 4"', "var(--accent)"),
+        "side":    (1.5, 0.70, ' stroke-dasharray="2 3"', "var(--accent)"),
+        "other":   (2.0, 0.80, "", "var(--spec)"),
+        "other_h": (1.5, 0.70, ' stroke-dasharray="7 4"', "var(--spec)"),
     }
     for hz, label, kind in sorted(marks):
         width, opacity, dash, colour = STYLE[kind]
@@ -267,8 +270,8 @@ def _spectrum_svg(result: dict, freqs: np.ndarray, mags: np.ndarray) -> str:
         p.append(
             f'<text x="{x:.1f}" y="{axis_y + 16 + row * 13}" '
             f'text-anchor="middle" font-size="{11 if kind in ("lead", "other") else 10}" '
-            f'fill="{"var(--accent)" if kind.startswith("lead") else "var(--ink-2)"}" '
-            f'opacity="{1 if kind in ("lead", "other") else .72}" '
+            f'fill="{"var(--accent)" if kind.startswith("lead") else "var(--spec)"}" '
+            f'opacity="{1 if kind in ("lead", "other") else .82}" '
             f'font-weight="{600 if lead else 400}">{_e(label)}</text>')
 
     # A frequency axis of its own, so a peak can be located without a marker next to it.
@@ -308,12 +311,14 @@ def _rule(colour: str, dash: str = "", width: float = 1.8) -> str:
 
 
 def _legend(leader: str) -> str:
+    # Swatches carry the chart's own widths and colours; a legend that redraws them
+    # thinner is a legend for a different chart.
     items = [
-        (_rule("var(--accent)"), f"{leader} (leading fault)"),
-        (_rule("var(--accent)", ' stroke-dasharray="6 4"', 1.2), "higher harmonics"),
-        (_rule("var(--accent)", ' stroke-dasharray="1.5 3"', 1.0), "shaft sidebands"),
-        (_rule("var(--ink-2)", "", 1.3), "other faults"),
-        (_rule("var(--ink-2)", ' stroke-dasharray="6 4"', 1.0), "other higher harmonics"),
+        (_rule("var(--accent)", "", 2.5), f"{leader} (leading fault)"),
+        (_rule("var(--accent)", ' stroke-dasharray="7 4"', 2.0), "higher harmonics"),
+        (_rule("var(--accent)", ' stroke-dasharray="2 3"', 1.5), "shaft sidebands"),
+        (_rule("var(--spec)", "", 2.0), "other faults"),
+        (_rule("var(--spec)", ' stroke-dasharray="7 4"', 1.5), "other higher harmonics"),
     ]
     return ('<div class="legend">'
             + "".join(f"<span>{svg}{_e(text)}</span>" for svg, text in items)
@@ -321,7 +326,7 @@ def _legend(leader: str) -> str:
 
 
 def _waveform_legend(leader: str, period_s: float) -> str:
-    tick = _rule("var(--accent)", ' stroke-dasharray="3 4"', 1.0)
+    tick = _rule("var(--accent)", ' stroke-dasharray="3 4"', 1.5)
     return (f'<div class="legend"><span>{tick}expected {_e(leader)} spacing — '
             f'{period_s * 1000:.1f} ms between impacts</span></div>')
 
@@ -364,8 +369,8 @@ def _waveform_svg(x: np.ndarray, rate: float, period_s: float | None = None) -> 
         while t < seg.size / rate:
             gx = X(t * rate)
             p.append(f'<line x1="{gx:.1f}" y1="17" x2="{gx:.1f}" '
-                     f'y2="{17 + plot_h}" stroke="var(--accent)" stroke-width="1" '
-                     f'opacity=".30" stroke-dasharray="3 4"/>')
+                     f'y2="{17 + plot_h}" stroke="var(--accent)" stroke-width="1.5" '
+                     f'opacity="0.70" stroke-dasharray="3 4"/>')
             t += period_s
 
     pts = " ".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in enumerate(seg))
