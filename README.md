@@ -1,12 +1,26 @@
-# new_server
+# NI DAQmx MCP Server
 
 MCP server for an NI cDAQ rig: measurement tools, declarative test plans, a live
 dashboard, bearing-fault analysis, and HTML reports. Files and reports live in
-SystemLink; only plans, the run database, and a re-fetchable cache stay local.
-
-37 tools over `streamable-http`.
+SystemLink; while plans, the run database, and a re-fetchable cache stay local.
 
 ## Setup
+
+### Hardware requirements
+
+- Your laptop → actual user or client
+- Matrix-800 → agentic helper in the form of an MCP server
+- x86 PC → simulating existing NI environment
+- NI CompactDAQ with its modules
+
+### Prerequisites
+
+- [Claude Desktop](https://claude.com/download) installed on your laptop
+- [NI Systemlink](https://www.ni.com/en/shop/electronic-test-instrumentation/application-software-for-electronic-test-and-instrumentation-category/systemlink.html?srsltid=AfmBOopJHEtmiJhni50_LrCdFA-rTdUQIQ9wwcHDU51wg6AtWrGNe8Nb) installed and activated on x86 PC
+- [NI DAQmx Driver](https://www.ni.com/en/support/downloads/drivers/download.ni-daq-mx.html?srsltid=AfmBOoqT2gVISixMBwv0jWhaQPJnV1vh9WPWSOt7L1ZGmBzlNjsH6CzT#607420) installed on x86 PC
+- [NI gRPC Device Server](https://github.com/ni/grpc-device/releases) running on x86 PC
+
+### MCP server on Matrix-800 Quick Start
 
 ```bash
 pip install -r ../requirements.txt
@@ -17,30 +31,28 @@ python server.py
 `.env` (untracked) — everything not derivable:
 
 ```
-DAQ_HOST=192.168.1.129        # gRPC device server + SystemLink, same box
-GRPC_PORT=31763
-SYSTEMLINK_USER=<login>       # a SystemLink account; basic auth, no API key needed
+DAQ_HOST=192.168.1.129        # x86 PC address
+GRPC_PORT=31763               # default gRPC address
+SYSTEMLINK_USER=<login>       # Systemlink account
 SYSTEMLINK_PASSWORD=<password>
 SYSTEMLINK_VERIFY_TLS=false   # self-signed cert
 ```
 
 `HOST` is detected from the interface that routes toward `DAQ_HOST`. Set it in `.env`
-only where that can't be right — container, NAT, reverse proxy.
+only where that can't be right (container, NAT, reverse proxy). Codebase binds **port 80**, so the dashboard is a bare `http://<host>`.
 
-Binds **port 80**, so the dashboard is a bare `http://<host>`. Privileged on Linux:
-run as root, or change the port in `server.py:47` and `config.DASHBOARD_URL` together.
-
-## Claude Desktop
+### Claude Desktop config
 
 ```json
-{ "mcpServers": { "nidaqmx": {
-    "command": "npx",
-    "args": ["-y", "mcp-remote", "http://192.168.1.72/mcp", "--allow-http"] } } }
+{ "mcpServers": { 
+    "nidaqmx": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://<host>/mcp", "--allow-http"] } } }
 ```
 
 ## Modules
 
-| | |
+| File| Use |
 |---|---|
 | `config.py` | every address and credential; loads `.env` |
 | `server.py` | hardware tools, monitor, recorder, dashboard routes |
@@ -52,6 +64,8 @@ run as root, or change the port in `server.py:47` and `config.DASHBOARD_URL` tog
 | `systemlink.py` | File service: upload, query, cached download |
 
 ## Tools
+
+37 tools over `streamable-http`:
 
 **System** `list_devices` `get_device_info` `check_support` `restart_device` `get_status`
 
@@ -74,9 +88,9 @@ run as root, or change the port in `server.py:47` and `config.DASHBOARD_URL` tog
 ## Workflows
 
 ```
-plan_template → validate_plan → create_plan → submit_run → get_run → generate_report
-start_monitor → start_recording → stop_recording            → vib_*.tdms
-list_files(kind=…) → get_file → analyze_vibration → vibration_report
+1. plan_template → validate_plan → create_plan → submit_run → get_run → generate_report
+2. start_monitor → start_recording → stop_recording → vib_*.tdms
+3. list_files(kind=vibration) → get_file → analyze_vibration → vibration_report
 ```
 
 `analyze_vibration` reports evidence — SNR per fault frequency, harmonics, sidebands,
@@ -98,13 +112,15 @@ Every uploaded file carries a `kind`, and the filename prefix follows it:
 Recordings also carry `device`, `channels`, `units`, `sample_rate_hz`, `duration_s`,
 `samples`, and `rpm` — enough to choose a file from `list_files` without downloading it.
 
-## This rig
+## Codebase developed using these hardware
 
 | device | module | subsystems |
 |---|---|---|
-| DAQ1Mod1, DAQ1Mod2 | NI 9234 | `ai` only, ±5 V, IEPE/TEDS |
-| DAQ1Mod3 | NI 9219 | `ai` only, max 100 S/s |
-| DAQ1Mod4 | NI 9263 | `ao` only |
+| DAQ1 | [NI cDAQ-9183](https://www.ni.com/en/shop/hardware/compactdaq-chassis/model-cdaq-9183?srsltid=AfmBOoqeBu97vUzquiVHt7cEzGD1LD7TPEENw8b2U5Nwt2DpKUGiJsv3) | chassis with 4 module slots
+| DAQ1Mod1 | [NI-9234](https://www.ni.com/en/shop/hardware/sound-and-vibration/model-ni-9234?srsltid=AfmBOor8DX9HIoS2oYq32d7fqGyWQiY9IeOf2Yp7RwkvlKnXS2Jsjqif) | `ai` only, ±5 V, IEPE/TEDS |
+| DAQ1Mod2 | [NI-9234](https://www.ni.com/en/shop/hardware/sound-and-vibration/model-ni-9234?srsltid=AfmBOor8DX9HIoS2oYq32d7fqGyWQiY9IeOf2Yp7RwkvlKnXS2Jsjqif) | `ai` only, ±5 V, IEPE/TEDS |
+| DAQ1Mod3 | [NI-9219](https://www.ni.com/en/shop/hardware/strain--pressure--and-force/model-ni-9219?srsltid=AfmBOor8fyOaZk8F7peMm7eqTBDr95DviDRROVCGE0X6Fifv_XI-Vfzb) | `ai` only, max 100 S/s |
+| DAQ1Mod4 | [NI-9263](https://www.ni.com/docs/en-US/bundle/ni-compactrio/page/ni-9263.html?srsltid=AfmBOookar-oHUL-DfKTa4xUd6V8XOJV-BPVR4u4-k64dlPJ2vAEw7Dp) | `ao` only |
 
 No counters and no digital lines, so `count_edges`, `measure_frequency`, `pulse`,
 `read_digital` and `set_digital` have no hardware here. `check_support` says so per

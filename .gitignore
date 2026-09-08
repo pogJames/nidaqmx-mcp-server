@@ -10,3 +10,4 @@ venv/
 # database is rebuilt by run_store. Plans are authored documents and stay tracked.
 data/cache/
 data/runs.db
+DEMO.md
