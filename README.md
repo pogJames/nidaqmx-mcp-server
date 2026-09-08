@@ -1,8 +1,29 @@
-# NI DAQmx MCP Server
+# Agentic Testing and Monitoring System
 
-MCP server for an NI cDAQ rig: measurement tools, declarative test plans, a live
-dashboard, bearing-fault analysis, and HTML reports. Files and reports live in
-SystemLink; while plans, the run database, and a re-fetchable cache stay local.
+Test benches have capable hardware and mature software. But humans still need to:
+
+- look up specs
+- configure channels
+- wire block diagrams
+- code the sweep and the limit checks
+- run the analysis
+- write the report
+- etc etc etc
+
+
+So...
+
+***an MCP server for NI DAQ rigs — hardware control, test planning, plan execution, live monitoring, data analysis, and report generation.***
+  
+> ***Zero code, zero scripts, zero configuration... Describe the test in plain English and let the AI run it, end to end!***
+
+
+  What keeps that trustworthy is what it won't do. Plans are checked against the rig's
+  real capabilities before anything is driven. Every run is recorded and every report is
+  self-contained. Analysis returns evidence, not verdicts — the interpretation is signed
+  by whoever wrote it. 
+  
+Integrated with the NI ecosystem: [NI SystemLink](https://www.ni.com/en/shop/electronic-test-instrumentation/application-software-for-electronic-test-and-instrumentation-category/systemlink.html) for file management, and [NI-DAQmx](https://www.ni.com/en/support/downloads/drivers/download.ni-daq-mx.html) + [NI gRPC Device Server](https://github.com/ni/grpc-device/releases) for hardware control.
 
 ## Setup
 
@@ -17,7 +38,7 @@ SystemLink; while plans, the run database, and a re-fetchable cache stay local.
 
 - [Claude Desktop](https://claude.com/download) installed on your laptop
 - [NI Systemlink](https://www.ni.com/en/shop/electronic-test-instrumentation/application-software-for-electronic-test-and-instrumentation-category/systemlink.html?srsltid=AfmBOopJHEtmiJhni50_LrCdFA-rTdUQIQ9wwcHDU51wg6AtWrGNe8Nb) installed and activated on x86 PC
-- [NI DAQmx Driver](https://www.ni.com/en/support/downloads/drivers/download.ni-daq-mx.html?srsltid=AfmBOoqT2gVISixMBwv0jWhaQPJnV1vh9WPWSOt7L1ZGmBzlNjsH6CzT#607420) installed on x86 PC
+- [NI DAQmx](https://www.ni.com/en/support/downloads/drivers/download.ni-daq-mx.html?srsltid=AfmBOoqT2gVISixMBwv0jWhaQPJnV1vh9WPWSOt7L1ZGmBzlNjsH6CzT#607420) installed on x86 PC
 - [NI gRPC Device Server](https://github.com/ni/grpc-device/releases) running on x86 PC
 
 ### MCP server on Matrix-800 Quick Start
