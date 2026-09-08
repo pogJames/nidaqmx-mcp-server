@@ -1,22 +1,19 @@
 # Agentic Testing and Monitoring System
 
-Test benches have capable hardware and mature software. But humans still need to:
+Test benches have capable hardware and mature software. But humans still need to these by hand:
 
-- look up specs
-- configure channels
-- plan tests
-- code the tests
-- monitor tests
-- run the analysis
-- write the report
+- looking up specs
+- configuring channels
+- planning tests
+- coding the tests
+- monitoring tests
+- running the analysis
+- writing the report
 - etc etc etc
 
-So...
+Imagine doing ALL the above on Claude or ChatGPT or even other LLMs...
 
-***an MCP server for NI DAQ rigs → Do ALL the above in Claude or ChatGPT or other LLMs.***
-  
-> ***Describe what you want in plain English and let the AI run it, end to end!***
-
+***MCP server for NI DAQ rigs — Describe what you want in plain English and let the AI run it, end to end!***
 
   What keeps that trustworthy is ***what it won't do***. Plans are checked against the rig's
   real capabilities before anything is driven. Every run is recorded and every report is
