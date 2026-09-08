@@ -4,21 +4,21 @@ Test benches have capable hardware and mature software. But humans still need to
 
 - look up specs
 - configure channels
-- wire block diagrams
-- code the sweep and the limit checks
+- plan tests
+- code the tests
+- monitor tests
 - run the analysis
 - write the report
 - etc etc etc
 
-
 So...
 
-***an MCP server for NI DAQ rigs — hardware control, test planning, plan execution, live monitoring, data analysis, and report generation.***
+***an MCP server for NI DAQ rigs → Do ALL the above in Claude or ChatGPT or other LLMs.***
   
-> ***Zero code, zero scripts, zero configuration... Describe the test in plain English and let the AI run it, end to end!***
+> ***Describe what you want in plain English and let the AI run it, end to end!***
 
 
-  What keeps that trustworthy is what it won't do. Plans are checked against the rig's
+  What keeps that trustworthy is ***what it won't do***. Plans are checked against the rig's
   real capabilities before anything is driven. Every run is recorded and every report is
   self-contained. Analysis returns evidence, not verdicts — the interpretation is signed
   by whoever wrote it. 
